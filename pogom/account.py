@@ -525,7 +525,7 @@ def spin_pokestop(api, account, args, fort, step_location):
                      account['username'])
             # Update account stats and clear inventory if necessary.
             parse_level_up_rewards(api, account)
-            clear_inventory(api, account)
+            # clear_inventory(api, account)
             account['session_spins'] += 1
             incubate_eggs(api, account)
             return True
@@ -535,7 +535,7 @@ def spin_pokestop(api, account, args, fort, step_location):
             log.debug('Failed to spin Pokestop. Has recently been spun.')
         elif spin_result == 4:
             log.debug('Failed to spin Pokestop. Inventory is full.')
-            clear_inventory(api, account)
+            # clear_inventory(api, account)
         elif spin_result == 5:
             log.debug('Maximum number of Pokestops spun for this day.')
         else:
