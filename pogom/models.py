@@ -23,7 +23,7 @@ from cachetools import TTLCache
 from cachetools import cached
 from timeit import default_timer
 
-from .utils import (get_pokemon_name, get_pokemon_types,
+from .utils import (distance, get_pokemon_name, get_pokemon_types,
                     get_args, cellid, in_radius, date_secs, clock_between,
                     get_move_name, get_move_damage, get_move_energy,
                     get_move_type, calc_pokemon_level, peewee_attr_to_col)
@@ -101,6 +101,341 @@ class LatLongModel(BaseModel):
                     transform_from_wgs_to_gcj(
                         result['latitude'], result['longitude'])
         return results
+
+
+# The account DB model provides methods for various tasks in relation to
+# account handling in RM.
+class Account(LatLongModel):
+    auth_service = CharField(max_length=5)
+    username = CharField(primary_key=True, max_length=64)
+    password = CharField(max_length=64)
+    level = SmallIntegerField(index=True, default=1)
+    in_use = BooleanField(index=True, default=False)
+    instance_name = CharField(index=True, null=True, max_length=64)
+    latitude = DoubleField(null=True)
+    longitude = DoubleField(null=True)
+    captcha = BooleanField(index=True, default=False)
+    fail = BooleanField(index=True, default=False)
+    shadowban = BooleanField(index=True, default=False)
+    warn = BooleanField(index=True, default=False)
+    banned = BooleanField(index=True, default=False)
+    last_modified = DateTimeField(index=True, default=datetime.utcnow)
+
+    # Clears all DB accounts, used when --clear-db-accounts
+    @staticmethod
+    def clear_all():
+        return DeleteQuery(Account).execute()
+
+    # Gets requested accounts from DB, sorted by lowest level and
+    # oldest last_modified. Mark fetched accounts with in_use and instance_name
+    @staticmethod
+    def get_accounts(number, min_level=1, max_level=40, init=False):
+        query = []
+        accounts = []
+        # Try to re-use previous accounts for this instance
+        if init:
+            Account.reset_instance(keep_instance_name=True)
+            query = (Account
+                     .select()
+                     .where((Account.instance_name == args.status_name) &
+                            (Account.fail == 0) &
+                            (Account.shadowban == 0) &
+                            (Account.banned == 0) &
+                            (Account.level >= min_level) &
+                            (Account.level <= max_level))
+                     .order_by(Account.level.asc(),
+                               Account.last_modified.asc())
+                     .limit(number)
+                     .dicts())
+
+        if len(query) != number:  # Not exact same config? Get new accounts!
+            query = (Account
+                     .select()
+                     .where((Account.in_use == 0) &
+                            (Account.fail == 0) &
+                            (Account.shadowban == 0) &
+                            (Account.banned == 0) &
+                            (Account.level >= min_level) &
+                            (Account.level <= max_level))
+                     .order_by(Account.level.asc(),
+                               Account.last_modified.asc())
+                     .limit(number)
+                     .dicts())
+
+        if len(query):
+            # Directly set accounts to in_use with the instance_name
+            usernames = [dba['username'] for dba in query]
+            (Account.update(in_use=True,
+                            instance_name=args.status_name)
+                    .where((Account.username << usernames))
+                    .execute())
+
+            for a in query:
+                accounts.append(a)
+                a['db_level'] = a['level']
+
+            # Sets free all instance-flagged accounts which are not used now
+            if init:
+                (Account.update(in_use=False, instance_name=None)
+                        .where((Account.instance_name == args.status_name) &
+                               ~(Account.username << usernames))
+                        .execute())
+
+        log.debug('Got {} accounts.'.format(len(accounts)))
+
+        return accounts
+
+    @staticmethod
+    def get_hlvl_account(target_location):
+        hlvl_account = None
+        query = (Account
+                 .select()
+                 .where((Account.in_use == 0) &
+                        (Account.fail == 0) &
+                        (Account.shadowban == 0) &
+                        (Account.banned == 0) &
+                        (Account.level == 30))
+                 .order_by(Account.last_modified.asc())
+                 .limit(10)  # Don't spend too much time checking accounts.
+                 .dicts())
+
+        if not query:
+            log.warning('Found no available high-level accounts in database.')
+            return hlvl_account
+
+        min_distance = 100000000
+        for account in query:
+            location = (account['latitude'], account['longitude'])
+            meters = distance(target_location, location)
+            if meters < min_distance:
+                min_distance = meters
+                hlvl_account = account
+
+        if hlvl_account:
+            (Account.update(in_use=True, instance_name=args.status_name)
+                    .where(Account.username == hlvl_account['username'])
+                    .execute())
+
+        return hlvl_account
+
+    # Fetches all captcha'd accounts for captcha handling (later)
+    @staticmethod
+    def get_captchad():
+        query = Account.select().where((Account.captcha == 1)).dicts()
+        return list(query.values())
+
+    @staticmethod
+    def parse_accounts_csv(db, filename):
+        csv_lines = []
+        with open(filename, 'r') as file:
+            csv_lines = file.read().splitlines()
+
+        if not csv_lines:
+            log.error('Accounts CSV file "%s" could not be read.', filename)
+            return False
+
+        accounts = []
+        num_fields = -1
+        error = False
+        for num, line in enumerate(csv_lines, 1):
+            line = line.strip()
+
+            # Ignore blank lines and comment lines.
+            if len(line) == 0 or line.startswith('#'):
+                continue
+
+            fields = line.split(",")
+            fields = map(str.strip, fields)
+            if num_fields < 0:
+                num_fields = len(fields)
+
+            if num_fields != len(fields):
+                log.error((
+                    'File "%s" has an error on line "%d": ' +
+                    'field count must remain constant across all lines.'),
+                    filename, num)
+                error = True
+                continue
+
+            if num_fields == 2:
+                account = {
+                    'auth_service': 'ptc',
+                    'username': fields[0],
+                    'password': fields[1],
+                    'level': 1
+                }
+                accounts.append(account)
+
+            elif num_fields == 3 or num_fields == 4:
+                auth_service = fields[0].lower()
+                if auth_service != 'ptc' and auth_service != 'google':
+                    log.error((
+                        'File "%s" has an error on line "%d": ' +
+                        'first field must be either "ptc" or "google."'),
+                        filename, num)
+                    error = True
+                    continue
+
+                level = 1
+                # Check if account level is present.
+                if num_fields == 4 and fields[3]:
+                    if not fields[3].isdigit():
+                        log.error((
+                            'File "%s" has an error on line "%d": ' +
+                            'last field must contain the account level.'),
+                            filename, num)
+                        error = True
+                        continue
+
+                    level = int(fields[3])
+                    if level < 1 or level > 40:
+                        log.error((
+                            'File "%s" has an error on line "%d": ' +
+                            'account level must be between 1 and 40.'),
+                            filename, num)
+                        error = True
+                        continue
+
+                account = {
+                    'auth_service': fields[0],
+                    'username': fields[1],
+                    'password': fields[2],
+                    'level': level
+                }
+                accounts.append(account)
+            else:
+                log.error((
+                    'File "%s" has an error on line "%d": ' +
+                    'invalid field count, check syntax.'), filename, num)
+                error = True
+                continue
+
+        if error:
+            return False
+
+        return accounts
+
+    # Compares newly specified accounts from csv with existing DB accounts
+    @staticmethod
+    def insert_new(db, accounts):
+        log.info('Processing %d accounts into the database.',
+                 len(accounts))
+
+        new_accounts = []
+        if accounts:
+            if args.db_type == 'mysql':
+                step = 250
+            else:
+                # SQLite has a default max number of parameters of 999,
+                # so we need to limit how many rows we insert for it.
+                step = 50
+
+            usernames = [a['username'] for a in accounts]
+
+            query = (Account
+                     .select(Account.username)
+                     .where(Account.username << usernames)
+                     .dicts())
+
+            db_usernames = [dbu['username'] for dbu in query]
+
+            for a in accounts:
+                if a['username'] in db_usernames:
+                    # Skip accounts already on database.
+                    continue
+
+                new_accounts.append(a)
+
+            with db.atomic():
+                for idx in range(0, len(new_accounts), step):
+                    Account.insert_many(new_accounts[idx:idx+step]).execute()
+
+        log.info('Inserted %d new accounts into the database.',
+                 len(new_accounts))
+
+    # Updates the DB account after an action to show it's still in use
+    @staticmethod
+    def heartbeat(account):
+        (Account(username=account['username'],
+                 in_use=True,
+                 instance_name=args.status_name,
+                 last_modified=datetime.utcnow())
+         .save())
+
+    # Resets all instance-flagged accounts to set them free for re-use
+    @staticmethod
+    def reset_instance(keep_instance_name=False):
+        instance_name = args.status_name if keep_instance_name else None
+        (Account.update(in_use=False, instance_name=instance_name)
+                .where(Account.instance_name == args.status_name)
+                .execute())
+
+    @staticmethod
+    def set_level(account):
+        (Account(username=account['username'],
+                 level=account['level'])
+         .save())
+        account['db_level'] = account['level']
+
+    # Resets instance-flags of accounts to set them free for re-use
+    @staticmethod
+    def set_free(account):
+        (Account(username=account['username'],
+                 in_use=False,
+                 instance_name=None)
+         .save())
+
+    # Sets or resets the captcha flag of an account
+    @staticmethod
+    def set_captcha(account, captcha=True):
+        (Account(username=account['username'],
+                 captcha=captcha)
+         .save())
+
+    # Sets the fail flag of an account when getting removed from queue for
+    # uncertain reason. Re-use is possible.
+    @staticmethod
+    def set_fail(account):
+        (Account(username=account['username'],
+                 in_use=False,
+                 fail=True)
+         .save())
+        (WorkerStatus
+         .delete()
+         .where((WorkerStatus.username == account['username']))
+         .execute())
+
+    # Sets the shadowban flag of an account
+    @staticmethod
+    def set_shadowban(account):
+        (Account(username=account['username'],
+                 in_use=False,
+                 shadowban=True)
+         .save())
+        (WorkerStatus
+         .delete()
+         .where((WorkerStatus.username == account['username']))
+         .execute())
+
+    # Sets the warn flag of an account. Usage still possible in the future.
+    @staticmethod
+    def set_warn(account):
+        (Account(username=account['username'],
+                 warn=True)
+         .save())
+
+    # Sets the ban flag of an account. Re-use impossible.
+    @staticmethod
+    def set_banned(account):
+        (Account(username=account['username'],
+                 in_use=False,
+                 instance_name=None,
+                 banned=True)
+         .save())
+        (WorkerStatus
+         .delete()
+         .where((WorkerStatus.username == account['username']))
+         .execute())
 
 
 class Pokemon(LatLongModel):
@@ -1834,8 +2169,7 @@ def hex_bounds(center, steps=None, radius=None):
 
 # todo: this probably shouldn't _really_ be in "models" anymore, but w/e.
 def parse_map(args, map_dict, scan_coords, scan_location, db_update_queue,
-              wh_update_queue, key_scheduler, api, status, now_date, account,
-              account_sets):
+              wh_update_queue, key_scheduler, api, status, now_date, account):
     pokemon = {}
     pokestops = {}
     gyms = {}
@@ -2018,7 +2352,7 @@ def parse_map(args, map_dict, scan_coords, scan_location, db_update_queue,
             pokemon_info = False
             if args.encounter and (pokemon_id in args.enc_whitelist):
                 pokemon_info = encounter_pokemon(
-                    args, p, account, api, account_sets, status, key_scheduler)
+                    args, p, account, api, status, key_scheduler)
 
             pokemon[p.encounter_id] = {
                 'encounter_id': p.encounter_id,
@@ -2331,6 +2665,13 @@ def parse_map(args, map_dict, scan_coords, scan_location, db_update_queue,
 
     db_update_queue.put((ScannedLocation, {0: scan_location}))
 
+    # TODO: When search cycle is over we update account, not here.
+    '''
+    # Show the DB this account is still in use
+    Account.heartbeat(account)
+    if account['level'] > account['db_level']:
+        Account.set_level(account)
+    '''
     if pokemon:
         db_update_queue.put((Pokemon, pokemon))
     if pokestops:
@@ -2365,9 +2706,8 @@ def parse_map(args, map_dict, scan_coords, scan_location, db_update_queue,
     }
 
 
-def encounter_pokemon(args, pokemon, account, api, account_sets, status,
-                      key_scheduler):
-    using_accountset = False
+def encounter_pokemon(args, pokemon, account, api, status, key_scheduler):
+    using_db_account = False
     hlvl_account = None
     pokemon_id = None
     result = False
@@ -2381,9 +2721,11 @@ def encounter_pokemon(args, pokemon, account, api, account_sets, status,
             hlvl_account = account
             hlvl_api = api
         else:
+            using_db_account = True
+            # TODO: Fetch lvl 30 account from database instead, based on
+            # location and last time used.
             # Get account to use for IV and CP scanning.
-            hlvl_account = account_sets.next('30', scan_location)
-            using_accountset = True
+            hlvl_account = Account.get_hlvl_account(scan_location)
 
         time.sleep(args.encounter_delay)
 
@@ -2398,11 +2740,14 @@ def encounter_pokemon(args, pokemon, account, api, account_sets, status,
                  pokemon_id, hlvl_account['username'], scan_location[0],
                  scan_location[1])
 
+        # TODO: Find a way to re-use pgoapi - hlvl account queue + scheduler
+        '''
         # If not args.no_api_store is enabled, we need to
         # re-use an old API object if it's stored and we're
         # using an account from the AccountSet.
-        if not args.no_api_store and using_accountset:
+        if not args.no_api_store and using_db_account:
             hlvl_api = hlvl_account.get('api', None)
+        '''
 
         # Make new API for this account if we're not using an
         # API that's already logged in.
@@ -2429,7 +2774,7 @@ def encounter_pokemon(args, pokemon, account, api, account_sets, status,
             hlvl_api.activate_hash_server(key)
 
         # We have an API object now. If necessary, store it.
-        if using_accountset and not args.no_api_store:
+        if using_db_account and not args.no_api_store:
             hlvl_account['api'] = hlvl_api
 
         # Set location.
@@ -2497,8 +2842,8 @@ def encounter_pokemon(args, pokemon, account, api, account_sets, status,
 
     # We're done with the encounter. If it's from an
     # AccountSet, release account back to the pool.
-    if using_accountset:
-        account_sets.release(hlvl_account)
+    if using_db_account:
+        Account.set_free(hlvl_account)
 
     return result
 
@@ -3074,8 +3419,8 @@ def bulk_upsert(cls, data, db):
 
 
 def create_tables(db):
-    tables = [Pokemon, Pokestop, Gym, Raid, ScannedLocation, GymDetails,
-              GymMember, GymPokemon, MainWorker, WorkerStatus,
+    tables = [Account, Pokemon, Pokestop, Gym, Raid, ScannedLocation,
+              GymDetails, GymMember, GymPokemon, MainWorker, WorkerStatus,
               SpawnPoint, ScanSpawnPoint, SpawnpointDetectionData,
               Token, LocationAltitude, PlayerLocale, HashKeys]
     with db.execution_context():
@@ -3089,8 +3434,8 @@ def create_tables(db):
 
 
 def drop_tables(db):
-    tables = [Pokemon, Pokestop, Gym, Raid, ScannedLocation, Versions,
-              GymDetails, GymMember, GymPokemon, MainWorker,
+    tables = [Account, Pokemon, Pokestop, Gym, Raid, ScannedLocation,
+              Versions, GymDetails, GymMember, GymPokemon, MainWorker,
               WorkerStatus, SpawnPoint, ScanSpawnPoint,
               SpawnpointDetectionData, LocationAltitude, PlayerLocale,
               Token, HashKeys]

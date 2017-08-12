@@ -81,6 +81,7 @@ def check_login(args, account, api, proxy_url):
             return
 
     # Try to login. Repeat a few times, but don't get stuck here.
+    log.info('Logging in account {}...'.format(account['username']))
     num_tries = 0
 
     # One initial try + login_retries.
@@ -108,10 +109,8 @@ def check_login(args, account, api, proxy_url):
             time.sleep(args.login_delay)
 
     if num_tries > args.login_retries:
-        log.error(
-            ('Failed to login to Pokemon Go with account %s in ' +
-             '%d tries. Giving up.'),
-            account['username'], num_tries)
+        log.error('Failed to login to Pokemon Go with account %s in %d tries.',
+                  account['username'], num_tries)
         raise TooManyLoginAttempts('Exceeded login attempts.')
 
     time.sleep(random.uniform(2, 4))
@@ -521,8 +520,7 @@ def spin_pokestop(api, account, args, fort, step_location):
 
         spin_result = response['responses']['FORT_SEARCH'].result
         if spin_result == 1:
-            log.info('Successful Pokestop spin with %s.',
-                     account['username'])
+            log.info('Successful Pokestop spin with %s.', account['username'])
             # Update account stats and clear inventory if necessary.
             parse_level_up_rewards(api, account)
             clear_inventory(api, account)

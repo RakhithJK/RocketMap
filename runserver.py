@@ -22,8 +22,8 @@ from pogom.utils import (get_args, now, gmaps_reverse_geolocate,
                          dynamic_loading_refresher, dynamic_rarity_refresher)
 from pogom.altitude import get_gmaps_altitude
 
-from pogom.models import (init_database, create_tables, drop_tables,
-                          PlayerLocale, db_updater, clean_db_loop,
+from pogom.models import (Account, PlayerLocale, init_database, clean_db_loop,
+                          create_tables, drop_tables, db_updater,
                           verify_table_encoding, verify_database_schema)
 from pogom.webhook import wh_updater
 
@@ -412,6 +412,21 @@ def main():
                        args=(args, wh_updates_queue, wh_key_cache))
             t.daemon = True
             t.start()
+
+    # Clear all accounts from the database.
+    if args.clear_db_accounts:
+        log.info('Clearing all accounts in DB.')
+        Account.clear_all()
+
+    # Parse accounts from CSV file into the database.
+    if args.accounts_csv:
+        accounts = Account.parse_accounts_csv(db, args.accounts_csv)
+        if not accounts:
+            log.critical('Found some errors in accounts CSV file: %s',
+                         args.accounts_csv)
+            sys.exit(1)
+        else:
+            Account.insert_new(db, accounts)
 
     if not args.only_server:
         # Speed limit.
