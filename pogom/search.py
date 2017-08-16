@@ -48,7 +48,8 @@ from .transform import get_new_coords
 from .account import setup_api, check_login, AccountSet
 from .captcha import captcha_overseer_thread, handle_captcha
 from .proxy import get_new_proxy
-from .apiRequests import gym_get_info, get_map_objects as gmo
+from .apiRequests import (AccountBannedException, gym_get_info,
+                          get_map_objects as gmo)
 from .transform import jitter_location
 
 log = logging.getLogger(__name__)
@@ -279,8 +280,15 @@ def account_recycler(args, accounts_queue, account_failures):
 
         # Search through the list for any item that last failed before
         # -ari/--account-rest-interval seconds.
-        ok_time = now() - args.account_rest_interval
         for a in failed_temp:
+            rest_interval = args.account_rest_interval
+            fail_reason = a['reason']
+            if 'exception' in fail_reason:
+                rest_interval = rest_interval * 0.1
+            elif 'banned' in fail_reason:
+                rest_interval = rest_interval * 10
+
+            ok_time = now() - rest_interval
             if a['last_fail_time'] <= ok_time:
                 # Remove the account from the real list, and add to the account
                 # queue.
@@ -989,7 +997,18 @@ def search_worker_thread(args, account_queue, account_sets, account_failures,
 
                 # Ok, let's get started -- check our login status.
                 status['message'] = 'Logging in...'
-                check_login(args, account, api, status['proxy_url'])
+                try:
+                    check_login(args, account, api, status['proxy_url'])
+                except AccountBannedException:
+                    status['message'] = (
+                        'Account {} is probably banned.'.format(
+                            account['username']))
+                    log.warning(status['message'])
+                    account_failures.append({'account': account,
+                                             'last_fail_time': now(),
+                                             'reason': 'banned'})
+                    account['banned'] = True
+                    break
 
                 # Only run this when it's the account's first login, after
                 # check_login().

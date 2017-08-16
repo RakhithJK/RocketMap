@@ -14,9 +14,10 @@ from .fakePogoApi import FakePogoApi
 from .pgoapiwrapper import PGoApiWrapper
 from .utils import in_radius, generate_device_info, distance
 from .proxy import get_new_proxy
-from .apiRequests import (send_generic_request, fort_details,
-                          recycle_inventory_item, use_item_egg_incubator,
-                          release_pokemon, level_up_rewards, fort_search)
+from .apiRequests import (AccountBannedException, send_generic_request,
+                          fort_details, recycle_inventory_item,
+                          use_item_egg_incubator, release_pokemon,
+                          level_up_rewards, fort_search)
 
 log = logging.getLogger(__name__)
 
@@ -181,6 +182,8 @@ def rpc_login_sequence(args, api, account):
 
         total_req += 1
         time.sleep(random.uniform(.53, 1.1))
+    except AccountBannedException:
+        raise
     except Exception as e:
         log.exception('Error while downloading remote config: %s.', e)
         raise LoginSequenceFail('Failed while getting remote config version in'
