@@ -383,10 +383,12 @@ def get_args():
         '--db-port', help='Port for the database.', type=int, default=3306)
     group.add_argument(
         '--db-threads',
-        help=('Number of db threads; increase if the db ' +
-              'queue falls behind.'),
-        type=int,
-        default=1)
+        help='Number of db threads; increase if the db queue falls behind.',
+        type=int, default=1)
+    group.add_argument(
+        '--db-max-connections',
+        help='Max connections (per thread) for the database.',
+        type=int, default=None)
     group = parser.add_argument_group('Database Cleanup')
     group.add_argument('-DC', '--db-cleanup',
                        help='Enable regular database cleanup thread.',

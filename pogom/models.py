@@ -68,7 +68,7 @@ def init_database(app):
         host=args.db_host,
         port=args.db_port,
         stale_timeout=30,
-        max_connections=None,
+        max_connections=args.db_max_connections,
         charset='utf8mb4')
 
     # Using internal method as the other way would be using internal var, we
