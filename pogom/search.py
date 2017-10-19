@@ -345,7 +345,6 @@ def search_overseer_thread(args, new_location_queue, control_flags, heartb,
     key_scheduler = None
     api_check_time = 0
     hashkeys_last_upsert = timeit.default_timer()
-    hashkeys_upsert_min_delay = 5.0
     gym_cache = None
 
     if args.gym_info:
@@ -491,8 +490,8 @@ def search_overseer_thread(args, new_location_queue, control_flags, heartb,
 
     # The real work starts here but will halt when any control flag is set.
     while True:
-        if (args.hash_key is not None and
-            (hashkeys_last_upsert + hashkeys_upsert_min_delay) <=
+        if (args.hash_key is not None and args.hash_key_update_interval and
+            (hashkeys_last_upsert + args.hash_key_update_interval) <=
                 timeit.default_timer()):
             upsertKeys(args.hash_key, key_scheduler, db_updates_queue)
             hashkeys_last_upsert = timeit.default_timer()

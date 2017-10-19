@@ -491,6 +491,10 @@ def get_args():
                         help=('Hash service name. Supports bossland and'
                               ' devkat hashing.'),
                         choices=['bossland', 'devkat'])
+    parser.add_argument('-hkui', '--hash-key-update-interval',
+                        help=('Send HashKey status updates to the database ' +
+                              'every X seconds (0 to disable).'),
+                        type=int, default=5)
     parser.add_argument('-novc', '--no-version-check', action='store_true',
                         help='Disable API version check.',
                         default=False)
