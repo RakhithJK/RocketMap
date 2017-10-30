@@ -313,8 +313,9 @@ def worker_status_db_thread(threads_status, db_updates_queue):
 
 
 # The main search loop that keeps an eye on the over all process.
-def search_overseer_thread(args, account_manager, new_location_queue,
-                           control_flags, heartb, db_updates_queue, wh_queue):
+def search_overseer_thread(args, account_manager, beehive_workers,
+                           new_location_queue, control_flags, heartbeat,
+                           db_updates_queue, wh_queue):
 
     log.info('Search overseer starting...')
 
@@ -379,41 +380,50 @@ def search_overseer_thread(args, account_manager, new_location_queue,
     # Create specified number of search_worker_thread.
     log.info('Starting search worker threads...')
     log.info('Configured scheduler is %s.', args.scheduler)
-    for i in range(0, args.workers):
-        log.debug('Starting search worker thread %d...', i)
+    worker_count = 0
+    beehive_size = len(beehive_workers)
 
-        if i == 0 or (args.beehive and i % args.workers_per_hive == 0):
-            search_items_queue = Queue()
-            # Create the appropriate type of scheduler to handle the search
-            # queue.
-            scheduler = schedulers.SchedulerFactory.get_scheduler(
-                args.scheduler, [search_items_queue], threadStatus, args)
+    for beehive_index in range(0, beehive_size):
+        if beehive_workers[beehive_index] < 1:
+            continue
+        search_items_queue = Queue()
+        # Create the appropriate type of scheduler to handle the search queue.
+        scheduler = schedulers.SchedulerFactory.get_scheduler(
+            args.scheduler, [search_items_queue], threadStatus, args)
 
-            scheduler_array.append(scheduler)
-            search_items_queue_array.append(search_items_queue)
+        scheduler_array.append(scheduler)
+        search_items_queue_array.append(search_items_queue)
 
-        # Create a WorkerStatus for each search worker thread.
-        workerId = 'Worker {:03}'.format(i)
-        threadStatus[workerId] = WorkerStatus.default_status()
+        hive_workers = beehive_workers[beehive_index]
+        while hive_workers > 0:
+            log.debug('Starting search worker thread %d...', worker_count)
 
-        # Update local runtime information.
-        threadStatus[workerId].update({
-            'type': 'Worker',
-            'active': False,
-            # Proxy will be assigned (if enabled) inside search worker thread.
-            'proxy_display': 'No',
-            'proxy_url': False
-        })
+            # Create a WorkerStatus for each search worker thread.
+            workerId = 'Worker {:03}'.format(worker_count)
+            threadStatus[workerId] = WorkerStatus.default_status()
 
-        argset = (
-            args, account_manager, control_flags, threadStatus[workerId],
-            db_updates_queue, wh_queue, scheduler, key_scheduler, gym_cache)
+            # Update local runtime information.
+            threadStatus[workerId].update({
+                'type': 'Worker',
+                'active': False,
+                # Proxy will be assigned inside search worker thread.
+                'proxy_display': 'No',
+                'proxy_url': False
+            })
 
-        t = Thread(target=search_worker_thread,
-                   name='search-worker-{}'.format(i),
-                   args=argset)
-        t.daemon = True
-        t.start()
+            argset = (
+                args, account_manager, control_flags, threadStatus[workerId],
+                db_updates_queue, wh_queue, scheduler, key_scheduler,
+                gym_cache)
+            t = Thread(
+                target=search_worker_thread,
+                name='search-worker-{}'.format(worker_count),
+                args=argset)
+
+            t.daemon = True
+            t.start()
+            worker_count += 1
+            hive_workers -= 1
 
     if not args.no_version_check:
         log.info('Enabling new API force Watchdog.')
@@ -436,7 +446,7 @@ def search_overseer_thread(args, account_manager, new_location_queue,
             hashkeys_last_upsert = timeit.default_timer()
 
         odt_triggered = (args.on_demand_timeout > 0 and
-                         (now() - args.on_demand_timeout) > heartb[0])
+                         (now() - args.on_demand_timeout) > heartbeat[0])
         if odt_triggered:
             control_flags['on_demand'].set()
             log.info('Searching paused due to inactivity...')
@@ -464,11 +474,14 @@ def search_overseer_thread(args, account_manager, new_location_queue,
 
             locations = generate_hive_locations(
                 current_location, step_distance,
-                args.step_limit, len(scheduler_array))
+                args.step_limit, beehive_size)
 
-            for i in range(0, len(scheduler_array)):
-                scheduler_array[i].location_changed(locations[i],
-                                                    db_updates_queue)
+            scheduler_index = 0
+            for i in range(0, beehive_size):
+                if beehive_workers[i] > 0:
+                    scheduler_array[scheduler_index].location_changed(
+                        locations[i], db_updates_queue)
+                    scheduler_index += 1
 
         # If there are no search_items_queue either the loop has finished or
         # it's been cleared above.  Either way, time to fill it back up.
