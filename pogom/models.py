@@ -2266,7 +2266,7 @@ def parse_map(args, map_dict, scan_coords, scan_location, db_update_queue,
             for f in forts:
                 # Spin Pokestop with 50% chance.
                 if f.type == 1 and pokestop_spinnable(f, scan_coords):
-                    spin_pokestop(api, account, args, f, scan_coords)
+                    spin_pokestop(status, api, account, args, f, scan_coords)
 
         # Helping out the GC.
         del forts

@@ -16,7 +16,7 @@ from .utils import in_radius, generate_device_info, distance
 from .proxy import get_new_proxy
 from .apiRequests import (send_generic_request, fort_details,
                           recycle_inventory_item, use_item_egg_incubator,
-                          release_pokemon, level_up_rewards, fort_search)
+                          level_up_rewards, fort_search)
 
 log = logging.getLogger(__name__)
 
@@ -498,7 +498,7 @@ def pokestop_spinnable(fort, step_location):
     return in_range and not pause_needed
 
 
-def spin_pokestop(api, account, args, fort, step_location):
+def spin_pokestop(status, api, account, args, fort, step_location):
     if not can_spin(account, args.account_max_spins):
         log.warning('Account %s has reached its Pokestop spinning limits.',
                     account['username'])
@@ -508,6 +508,7 @@ def spin_pokestop(api, account, args, fort, step_location):
         time.sleep(random.uniform(0.8, 1.8))
         fort_details(api, account, fort)
         time.sleep(random.uniform(0.8, 1.8))  # Don't let Niantic throttle.
+        recycle_items(status, api, account)
         response = fort_search(api, account, fort, step_location)
         time.sleep(random.uniform(2, 4))  # Don't let Niantic throttle.
 
@@ -525,7 +526,6 @@ def spin_pokestop(api, account, args, fort, step_location):
                      account['username'])
             # Update account stats and clear inventory if necessary.
             parse_level_up_rewards(api, account)
-            # clear_inventory(api, account)
             account['session_spins'] += 1
             incubate_eggs(api, account)
             return True
@@ -535,7 +535,6 @@ def spin_pokestop(api, account, args, fort, step_location):
             log.debug('Failed to spin Pokestop. Has recently been spun.')
         elif spin_result == 4:
             log.debug('Failed to spin Pokestop. Inventory is full.')
-            # clear_inventory(api, account)
         elif spin_result == 5:
             log.debug('Maximum number of Pokestops spun for this day.')
         else:
@@ -555,52 +554,32 @@ def parse_get_player(account, api_response):
         account['buddy'] = player_data.buddy_pokemon.id
 
 
-def clear_inventory(api, account):
-    items = [(1, 'Pokeball'), (2, 'Greatball'), (3, 'Ultraball'),
-             (101, 'Potion'), (102, 'Super Potion'), (103, 'Hyper Potion'),
-             (104, 'Max Potion'),
-             (201, 'Revive'), (202, 'Max Revive'),
-             (701, 'Razz Berry'), (703, 'Nanab Berry'), (705, 'Pinap Berry'),
-             (1101, 'Sun Stone'), (1102, 'Kings Rock'), (1103, 'Metal Coat'),
-             (1104, 'Dragon Scale'), (1105, 'Upgrade')]
+def recycle_items(status, api, account):
+    # https://docs.pogodev.org/api/enums/Item/
+    items = [
+        {'id': 1, 'name': 'Pokeball', 'min': 100, 'ratio': 0.05},
+        {'id': 2, 'name': 'Greatball', 'min': 40, 'ratio': 0.05},
+        {'id': 3, 'name': 'Ultraball', 'min': 40, 'ratio': 0.03},
+        {'id': 101, 'name': 'Potion', 'min': 10, 'ratio': 0.3},
+        {'id': 102, 'name': 'Super Potion', 'min': 10, 'ratio': 0.2},
+        {'id': 103, 'name': 'Hyper Potion', 'min': 10, 'ratio': 0.2},
+        {'id': 104, 'name': 'Max Potion', 'min': 30, 'ratio': 0.05},
+        {'id': 201, 'name': 'Revive', 'min': 10, 'ratio': 0.1},
+        {'id': 202, 'name': 'Max Revive', 'min': 30, 'ratio': 0.03},
+        {'id': 701, 'name': 'Razz Berry', 'min': 10, 'ratio': 0.2},
+        {'id': 703, 'name': 'Nanab Berry', 'min': 10, 'ratio': 0.2},
+        {'id': 705, 'name': 'Pinap Berry', 'min': 10, 'ratio': 0.2}]
 
-    total_pokemon = len(account['pokemons'])
-    release_count = int(total_pokemon - 5)
-    if total_pokemon > random.randint(5, 10):
-        release_ids = random.sample(account['pokemons'].keys(), release_count)
-        if account['buddy'] in release_ids:
-            release_ids.remove(account['buddy'])
-        # Don't let Niantic throttle.
-        time.sleep(random.uniform(2, 4))
-        release_p_response = release_pokemon(api, account, 0, release_ids)
+    random.shuffle(items)
+    for item in items:
+        item_count = account['items'].get(item['id'], 0)
+        if item_count > item['min']:
+            drop_count = int(item_count * item['ratio'])
 
-        if 'CHECK_CHALLENGE' in release_p_response['responses']:
-            captcha_url = release_p_response[
-                'responses']['CHECK_CHALLENGE'].challenge_url
-            if len(captcha_url) > 1:
-                log.info('Account encountered a reCaptcha.')
-                return False
+            time.sleep(random.uniform(3.0, 5.0))
+            resp = recycle_inventory_item(api, account, item['id'], drop_count)
 
-        release_response = release_p_response['responses']['RELEASE_POKEMON']
-        release_result = release_response.result
-
-        if release_result == 1:
-            log.info('Sucessfully Released %s Pokemon', len(release_ids))
-            for p_id in release_ids:
-                account['pokemons'].pop(p_id, None)
-        else:
-            log.error('Failed to release Pokemon.')
-
-    for item_id, item_name in items:
-        item_count = account['items'].get(item_id, 0)
-        random_max = random.randint(5, 10)
-        if item_count > random_max:
-            drop_count = item_count - random_max
-
-            # Don't let Niantic throttle.
-            time.sleep(random.uniform(2, 4))
-            resp = recycle_inventory_item(api, account, item_id, drop_count)
-
+            # Check for reCaptcha.
             if 'CHECK_CHALLENGE' in resp['responses']:
                 captcha_url = resp[
                     'responses']['CHECK_CHALLENGE'].challenge_url
@@ -610,19 +589,24 @@ def clear_inventory(api, account):
 
             clear_response = resp['responses']['RECYCLE_INVENTORY_ITEM']
             clear_result = clear_response.result
+
             if clear_result == 1:
-                log.info('Clearing %s %ss succeeded.', drop_count,
-                         item_name)
+                # Update item count.
+                account['items'][item['id']] = clear_response.new_count
+
+                status['message'] = 'Recycled {} {}s.'.format(
+                    drop_count, item['name'])
+                log.info(status['message'])
             elif clear_result == 2:
-                log.debug('Not enough items to clear, parsing failed.')
-            elif clear_result == 3:
-                log.debug('Tried to recycle incubator, parsing failed.')
+                status['message'] = 'Insufficient {}, parsing failed.'.format(
+                    drop_count, item['name'])
+                log.debug(status['message'])
             else:
-                log.warning('Failed to clear inventory.')
-
-            log.debug('Recycled inventory: \n\r{}'.format(clear_result))
-
-    return
+                status['message'] = 'Failed to recycle {} {}s: {}'.format(
+                    drop_count, item['name'], clear_result)
+                log.warning(status['message'])
+                return False
+    return True
 
 
 def incubate_eggs(api, account):
