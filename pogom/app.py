@@ -135,25 +135,31 @@ class Pogom(Flask):
         # Get real IP behind trusted reverse proxy.
         ip_addr = request.remote_addr
         if ip_addr in args.trusted_proxies:
-            ip_addr = request.headers.get('X-Forwarded-For', ip_addr)
-
-        # Make sure IP isn't blacklisted.
-        if self._ip_is_blacklisted(ip_addr):
+            x_fwd = request.headers.get('X-Forwarded-For', '')
+            for ip in x_fwd.split(','):
+                ip = ip.strip()
+                if ip and self._ip_is_blacklisted(ip):
+                    abort(403)
+                    break
+        elif self._ip_is_blacklisted(ip_addr):
             log.debug('Denied access to %s: blacklisted IP.', ip_addr)
             abort(403)
 
     def _ip_is_blacklisted(self, ip):
         if not self.blacklist:
             return False
+        try:
+            # Get the nearest IP range
+            pos = max(bisect_left(self.blacklist_keys, ip) - 1, 0)
+            ip_range = self.blacklist[pos]
 
-        # Get the nearest IP range
-        pos = max(bisect_left(self.blacklist_keys, ip) - 1, 0)
-        ip_range = self.blacklist[pos]
+            start = dottedQuadToNum(ip_range[0])
+            end = dottedQuadToNum(ip_range[1])
 
-        start = dottedQuadToNum(ip_range[0])
-        end = dottedQuadToNum(ip_range[1])
-
-        return start <= dottedQuadToNum(ip) <= end
+            return start <= dottedQuadToNum(ip) <= end
+        except Exception:
+            log.debug('Invalid IP address: %s', ip)
+            return False
 
     def set_control_flags(self, control):
         self.control_flags = control
