@@ -299,7 +299,8 @@ def account_recycler(args, accounts_queue, account_failures):
                     a['notified'] = True
 
 
-def worker_status_db_thread(threads_status, name, db_updates_queue):
+def worker_status_db_thread(threads_status, name, db_updates_queue,
+                            update_interval):
 
     while True:
         workers = {}
@@ -328,7 +329,7 @@ def worker_status_db_thread(threads_status, name, db_updates_queue):
         if overseer is not None:
             db_updates_queue.put((MainWorker, {0: overseer}))
             db_updates_queue.put((WorkerStatus, workers))
-        time.sleep(3)
+        time.sleep(update_interval)
 
 
 # The main search loop that keeps an eye on the over all process.
@@ -348,7 +349,8 @@ def search_overseer_thread(args, new_location_queue, control_flags, heartb,
     gym_cache = None
 
     if args.gym_info:
-        gym_cache = TTLCache(maxsize=10000, ttl=60)
+        gym_cache = TTLCache(
+            maxsize=args.gym_cache_size, ttl=args.gym_cache_ttl)
 
     '''
     Create a queue of accounts for workers to pull from. When a worker has
@@ -424,11 +426,12 @@ def search_overseer_thread(args, new_location_queue, control_flags, heartb,
         t.daemon = True
         t.start()
 
-    if args.status_name is not None:
+    if args.status_name and args.thread_status_update_interval:
         log.info('Starting status database thread...')
         t = Thread(target=worker_status_db_thread,
                    name='status_worker_db',
-                   args=(threadStatus, args.status_name, db_updates_queue))
+                   args=(threadStatus, args.status_name, db_updates_queue,
+                         args.thread_status_update_interval))
         t.daemon = True
         t.start()
 

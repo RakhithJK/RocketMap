@@ -429,6 +429,12 @@ def get_args():
                         help=('Get all details about gyms (causes an ' +
                               'additional API hit for every gym).'),
                         action='store_true', default=False)
+    parser.add_argument('-gcs', '--gym-cache-size',
+                        help='Gym LFU cache max size.', type=int,
+                        default=10000)
+    parser.add_argument('-gcttl', '--gym-cache-ttl',
+                        help='Defines Gym cache time-to-live.', type=int,
+                        default=180)
     parser.add_argument(
         '--wh-types',
         help=('Defines the type of messages to send to webhooks.'),
@@ -495,6 +501,10 @@ def get_args():
                         help=('Send HashKey status updates to the database ' +
                               'every X seconds (0 to disable).'),
                         type=int, default=5)
+    parser.add_argument('-tsui', '--thread-status-update-interval',
+                        help=('Send thread status updates to the database ' +
+                              'every X seconds (0 to disable).'),
+                        type=int, default=3)
     parser.add_argument('-novc', '--no-version-check', action='store_true',
                         help='Disable API version check.',
                         default=False)
