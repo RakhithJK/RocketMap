@@ -19,7 +19,8 @@ from flask_cache_bust import init_cache_busting
 from pogom.app import Pogom
 from pogom.utils import (get_args, now, gmaps_reverse_geolocate,
                          log_resource_usage_loop, get_debug_dump_link,
-                         dynamic_loading_refresher, dynamic_rarity_refresher)
+                         dynamic_loading_refresher, dynamic_rarity_refresher,
+                         generate_instance_id)
 from pogom.altitude import get_gmaps_altitude
 
 from pogom.models import (Account, PlayerLocale, init_database, clean_db_loop,
@@ -264,11 +265,17 @@ def main():
             "You can't use no-server and only-server at the same time, silly.")
         sys.exit(1)
 
-    # Abort if status name is not valid.
-    regexp = re.compile('^([\w\s\-.]+)$')
-    if not regexp.match(args.status_name):
-        log.critical('Status name contains illegal characters.')
-        sys.exit(1)
+    # Generate a unique identifier for this instance.
+    generate_instance_id(args)
+
+    if not args.status_name:
+        args.status_name = str(os.getpid())
+    else:
+        # Abort if status name is not valid.
+        regexp = re.compile('^([\w\s\-.]+)$')
+        if not regexp.match(args.status_name):
+            log.critical('Status name contains illegal characters.')
+            sys.exit(1)
 
     # Stop if we're just looking for a debug dump.
     if args.dump:
@@ -420,13 +427,13 @@ def main():
 
     # Parse accounts from CSV file into the database.
     if args.accounts_csv:
-        accounts = Account.parse_accounts_csv(db, args.accounts_csv)
+        accounts = Account.parse_accounts_csv(args.accounts_csv)
         if not accounts:
             log.critical('Found some errors in accounts CSV file: %s',
                          args.accounts_csv)
             sys.exit(1)
         else:
-            Account.insert_new(db, accounts)
+            Account.insert_new(accounts)
 
     if not args.only_server:
         # Speed limit.

@@ -109,9 +109,9 @@ class Account(LatLongModel):
     auth_service = CharField(max_length=5)
     username = CharField(primary_key=True, max_length=64)
     password = CharField(max_length=64)
+    instance_id = CharField(index=True, null=True, max_length=32)
     level = SmallIntegerField(index=True, default=1)
     in_use = BooleanField(index=True, default=False)
-    instance_name = CharField(index=True, null=True, max_length=64)
     latitude = DoubleField(null=True)
     longitude = DoubleField(null=True)
     captcha = BooleanField(index=True, default=False)
@@ -127,7 +127,7 @@ class Account(LatLongModel):
         return DeleteQuery(Account).execute()
 
     # Gets requested accounts from DB, sorted by lowest level and
-    # oldest last_modified. Mark fetched accounts with in_use and instance_name
+    # oldest last_modified. Mark fetched accounts with in_use and instance_id
     @staticmethod
     def get_accounts(number, min_level=1, max_level=40, init=False):
         query = []
@@ -137,7 +137,7 @@ class Account(LatLongModel):
             Account.reset_instance(keep_instance_name=True)
             query = (Account
                      .select()
-                     .where((Account.instance_name == args.status_name) &
+                     .where((Account.instance_id == args.instance_id) &
                             (Account.fail == 0) &
                             (Account.shadowban == 0) &
                             (Account.banned == 0) &
@@ -163,10 +163,10 @@ class Account(LatLongModel):
                      .dicts())
 
         if len(query):
-            # Directly set accounts to in_use with the instance_name
+            # Directly set accounts to in_use with the instance_id
             usernames = [dba['username'] for dba in query]
             (Account.update(in_use=True,
-                            instance_name=args.status_name)
+                            instance_id=args.instance_id)
                     .where((Account.username << usernames))
                     .execute())
 
@@ -176,8 +176,8 @@ class Account(LatLongModel):
 
             # Sets free all instance-flagged accounts which are not used now
             if init:
-                (Account.update(in_use=False, instance_name=None)
-                        .where((Account.instance_name == args.status_name) &
+                (Account.update(in_use=False, instance_id=None)
+                        .where((Account.instance_id == args.instance_id) &
                                ~(Account.username << usernames))
                         .execute())
 
@@ -212,7 +212,7 @@ class Account(LatLongModel):
                 hlvl_account = account
 
         if hlvl_account:
-            (Account.update(in_use=True, instance_name=args.status_name)
+            (Account.update(in_use=True, instance_id=args.instance_id)
                     .where(Account.username == hlvl_account['username'])
                     .execute())
 
@@ -225,7 +225,7 @@ class Account(LatLongModel):
         return list(query.values())
 
     @staticmethod
-    def parse_accounts_csv(db, filename):
+    def parse_accounts_csv(filename):
         csv_lines = []
         with open(filename, 'r') as file:
             csv_lines = file.read().splitlines()
@@ -317,7 +317,7 @@ class Account(LatLongModel):
 
     # Compares newly specified accounts from csv with existing DB accounts
     @staticmethod
-    def insert_new(db, accounts):
+    def insert_new(accounts):
         log.info('Processing %d accounts into the database.',
                  len(accounts))
 
@@ -346,7 +346,7 @@ class Account(LatLongModel):
 
                 new_accounts.append(a)
 
-            with db.atomic():
+            with Account.database().atomic():
                 for idx in range(0, len(new_accounts), step):
                     Account.insert_many(new_accounts[idx:idx+step]).execute()
 
@@ -358,16 +358,16 @@ class Account(LatLongModel):
     def heartbeat(account):
         (Account(username=account['username'],
                  in_use=True,
-                 instance_name=args.status_name,
+                 instance_id=args.instance_id,
                  last_modified=datetime.utcnow())
          .save())
 
     # Resets all instance-flagged accounts to set them free for re-use
     @staticmethod
     def reset_instance(keep_instance_name=False):
-        instance_name = args.status_name if keep_instance_name else None
-        (Account.update(in_use=False, instance_name=instance_name)
-                .where(Account.instance_name == args.status_name)
+        instance_name = args.instance_id if keep_instance_name else None
+        (Account.update(in_use=False, instance_id=instance_name)
+                .where(Account.instance_id == args.instance_id)
                 .execute())
 
     @staticmethod
@@ -382,7 +382,7 @@ class Account(LatLongModel):
     def set_free(account):
         (Account(username=account['username'],
                  in_use=False,
-                 instance_name=None)
+                 instance_id=None)
          .save())
 
     # Sets or resets the captcha flag of an account
@@ -429,7 +429,7 @@ class Account(LatLongModel):
     def set_banned(account):
         (Account(username=account['username'],
                  in_use=False,
-                 instance_name=None,
+                 instance_id=None,
                  banned=True)
          .save())
         (WorkerStatus

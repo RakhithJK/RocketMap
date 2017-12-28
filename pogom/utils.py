@@ -469,7 +469,7 @@ def get_args():
     parser.add_argument('-slt', '--stats-log-timer',
                         help='In log view, list per hr stats every X seconds',
                         type=int, default=0)
-    parser.add_argument('-sn', '--status-name', default=str(os.getpid()),
+    parser.add_argument('-sn', '--status-name', default=None,
                         help=('Enable status page database update using ' +
                               'STATUS_NAME as main worker name.'))
     parser.add_argument('-hk', '--hash-key', default=None, action='append',
@@ -852,6 +852,21 @@ def generate_device_info(identifier):
 
     device_info['firmware_type'] = ios_pool[pick_hash % len(ios_pool)]
     return device_info
+
+
+def generate_instance_id(args):
+    md5 = hashlib.md5()
+    if args.status_name:
+        md5.update(args.status_name)
+    md5.update(args.location)
+    md5.update(str(args.step_limit))
+    md5.update(str(args.workers))
+    if args.beehive:
+        md5.update(str(args.workers_per_hive))
+
+    instance_id = md5.hexdigest()
+    args.instance_id = instance_id
+    log.info('Instance ID: %s', instance_id)
 
 
 def calc_pokemon_level(cp_multiplier):
