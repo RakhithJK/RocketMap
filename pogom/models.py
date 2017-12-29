@@ -110,8 +110,7 @@ class Account(LatLongModel):
     username = CharField(primary_key=True, max_length=64)
     password = CharField(max_length=64)
     instance_id = CharField(index=True, null=True, max_length=32)
-    level = SmallIntegerField(index=True, default=1)
-    in_use = BooleanField(index=True, default=False)
+    allocated = BooleanField(index=True, default=False)
     latitude = DoubleField(null=True)
     longitude = DoubleField(null=True)
     captcha = BooleanField(index=True, default=False)
@@ -119,6 +118,8 @@ class Account(LatLongModel):
     shadowban = BooleanField(index=True, default=False)
     warn = BooleanField(index=True, default=False)
     banned = BooleanField(index=True, default=False)
+    level = SmallIntegerField(index=True, default=0)
+    last_scan = DateTimeField(index=True, null=True)
     last_modified = DateTimeField(index=True, default=datetime.utcnow)
 
     # Clears all DB accounts, used when --clear-db-accounts
@@ -127,7 +128,7 @@ class Account(LatLongModel):
         return DeleteQuery(Account).execute()
 
     # Gets requested accounts from DB, sorted by lowest level and
-    # oldest last_modified. Mark fetched accounts with in_use and instance_id
+    # oldest last_modified. Mark allocated accounts with instance_id.
     @staticmethod
     def get_accounts(number, min_level=1, max_level=40, init=False):
         query = []
@@ -151,7 +152,7 @@ class Account(LatLongModel):
         if len(query) != number:  # Not exact same config? Get new accounts!
             query = (Account
                      .select()
-                     .where((Account.in_use == 0) &
+                     .where((Account.allocated == 0) &
                             (Account.fail == 0) &
                             (Account.shadowban == 0) &
                             (Account.banned == 0) &
@@ -163,9 +164,9 @@ class Account(LatLongModel):
                      .dicts())
 
         if len(query):
-            # Directly set accounts to in_use with the instance_id
+            # Directly set accounts to allocated with the instance_id
             usernames = [dba['username'] for dba in query]
-            (Account.update(in_use=True,
+            (Account.update(allocated=True,
                             instance_id=args.instance_id)
                     .where((Account.username << usernames))
                     .execute())
@@ -176,7 +177,7 @@ class Account(LatLongModel):
 
             # Sets free all instance-flagged accounts which are not used now
             if init:
-                (Account.update(in_use=False, instance_id=None)
+                (Account.update(allocated=False, instance_id=None)
                         .where((Account.instance_id == args.instance_id) &
                                ~(Account.username << usernames))
                         .execute())
@@ -190,7 +191,7 @@ class Account(LatLongModel):
         hlvl_account = None
         query = (Account
                  .select()
-                 .where((Account.in_use == 0) &
+                 .where((Account.allocated == 0) &
                         (Account.fail == 0) &
                         (Account.shadowban == 0) &
                         (Account.banned == 0) &
@@ -212,7 +213,7 @@ class Account(LatLongModel):
                 hlvl_account = account
 
         if hlvl_account:
-            (Account.update(in_use=True, instance_id=args.instance_id)
+            (Account.update(allocated=True, instance_id=args.instance_id)
                     .where(Account.username == hlvl_account['username'])
                     .execute())
 
@@ -357,7 +358,7 @@ class Account(LatLongModel):
     @staticmethod
     def heartbeat(account):
         (Account(username=account['username'],
-                 in_use=True,
+                 allocated=True,
                  instance_id=args.instance_id,
                  last_modified=datetime.utcnow())
          .save())
@@ -366,7 +367,7 @@ class Account(LatLongModel):
     @staticmethod
     def reset_instance(keep_instance_name=False):
         instance_name = args.instance_id if keep_instance_name else None
-        (Account.update(in_use=False, instance_id=instance_name)
+        (Account.update(allocated=False, instance_id=instance_name)
                 .where(Account.instance_id == args.instance_id)
                 .execute())
 
@@ -381,7 +382,7 @@ class Account(LatLongModel):
     @staticmethod
     def set_free(account):
         (Account(username=account['username'],
-                 in_use=False,
+                 allocated=False,
                  instance_id=None)
          .save())
 
@@ -397,7 +398,7 @@ class Account(LatLongModel):
     @staticmethod
     def set_fail(account):
         (Account(username=account['username'],
-                 in_use=False,
+                 allocated=False,
                  fail=True)
          .save())
         (WorkerStatus
@@ -409,7 +410,7 @@ class Account(LatLongModel):
     @staticmethod
     def set_shadowban(account):
         (Account(username=account['username'],
-                 in_use=False,
+                 allocated=False,
                  shadowban=True)
          .save())
         (WorkerStatus
@@ -428,7 +429,7 @@ class Account(LatLongModel):
     @staticmethod
     def set_banned(account):
         (Account(username=account['username'],
-                 in_use=False,
+                 allocated=False,
                  instance_id=None,
                  banned=True)
          .save())
