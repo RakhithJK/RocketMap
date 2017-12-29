@@ -64,6 +64,8 @@ def get_args():
                         is_config_file=True, help='Set a shared config')
     parser.add_argument('-w', '--workers', type=int, required=True,
                         help='Number of search worker threads to start.')
+    parser.add_argument('-hw', '--hlvl-workers', type=int, default=0,
+                        help='Number of high level accounts to allocate.')
     parser.add_argument('-asi', '--account-search-interval', type=int,
                         default=0,
                         help=('Seconds for accounts to search before ' +
@@ -80,6 +82,9 @@ def get_args():
                         help=('Load accounts from CSV file containing one ' +
                               'account per line with format:' +
                               '<ptc/google>,<username>,<password>[,<level>]'))
+    parser.add_argument('-hs', '--hlvl-scan',
+                        help='Use high-level accounts as regular accounts.',
+                        action='store_true', default=False)
     parser.add_argument('-bh', '--beehive',
                         help=('Use beehive configuration for multiple ' +
                               'accounts, one account per hex.  Make sure ' +
@@ -791,6 +796,97 @@ def get_move_type(move_id):
 
 def dottedQuadToNum(ip):
     return struct.unpack("!L", socket.inet_aton(ip))[0]
+
+
+def parse_accounts_csv(filename):
+    csv_lines = []
+    with open(filename, 'r') as file:
+        csv_lines = file.read().splitlines()
+
+    if not csv_lines:
+        log.error('Accounts CSV file "%s" could not be read.', filename)
+        return False
+
+    accounts = []
+    num_fields = -1
+    error = False
+    for num, line in enumerate(csv_lines, 1):
+        line = line.strip()
+
+        # Ignore blank lines and comment lines.
+        if len(line) == 0 or line.startswith('#'):
+            continue
+
+        fields = line.split(",")
+        fields = map(str.strip, fields)
+        if num_fields < 0:
+            num_fields = len(fields)
+
+        if num_fields != len(fields):
+            log.error((
+                'File "%s" has an error on line "%d": ' +
+                'field count must remain constant across all lines.'),
+                filename, num)
+            error = True
+            continue
+
+        if num_fields == 2:
+            account = {
+                'auth_service': 'ptc',
+                'username': fields[0],
+                'password': fields[1],
+                'level': 0
+            }
+            accounts.append(account)
+
+        elif num_fields == 3 or num_fields == 4:
+            auth_service = fields[0].lower()
+            if auth_service != 'ptc' and auth_service != 'google':
+                log.error((
+                    'File "%s" has an error on line "%d": ' +
+                    'first field must be either "ptc" or "google."'),
+                    filename, num)
+                error = True
+                continue
+
+            level = 0
+            # Check if account level is present.
+            if num_fields == 4 and fields[3]:
+                if not fields[3].isdigit():
+                    log.error((
+                        'File "%s" has an error on line "%d": ' +
+                        'last field must contain the account level.'),
+                        filename, num)
+                    error = True
+                    continue
+
+                level = int(fields[3])
+                if level < 0 or level > 40:
+                    log.error((
+                        'File "%s" has an error on line "%d": ' +
+                        'account level must be between 0 and 40.'),
+                        filename, num)
+                    error = True
+                    continue
+
+            account = {
+                'auth_service': fields[0],
+                'username': fields[1],
+                'password': fields[2],
+                'level': level
+            }
+            accounts.append(account)
+        else:
+            log.error((
+                'File "%s" has an error on line "%d": ' +
+                'invalid field count, check syntax.'), filename, num)
+            error = True
+            continue
+
+    if error:
+        return False
+
+    return accounts
 
 
 # Generate random device info.

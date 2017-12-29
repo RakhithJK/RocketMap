@@ -4,19 +4,18 @@
 import logging
 import time
 import random
-from threading import Lock
-from timeit import default_timer
 
 from pgoapi import PGoApi
 from pgoapi.exceptions import AuthException
 
 from .fakePogoApi import FakePogoApi
 from .pgoapiwrapper import PGoApiWrapper
-from .utils import in_radius, generate_device_info, distance
+from .utils import in_radius, generate_device_info
 from .proxy import get_new_proxy
 from .apiRequests import (send_generic_request, fort_details,
                           recycle_inventory_item, use_item_egg_incubator,
-                          release_pokemon, level_up_rewards, fort_search)
+                          release_pokemon, level_up_rewards, fort_search,
+                          AccountBannedException)
 
 log = logging.getLogger(__name__)
 
@@ -180,6 +179,11 @@ def rpc_login_sequence(args, api, account):
 
         total_req += 1
         time.sleep(random.uniform(.53, 1.1))
+    except AccountBannedException as e:
+        account['banned'] = 1
+        log.exception('Error while downloading remote config: %s.', e)
+        raise LoginSequenceFail('Account {} is temporarily banned.'.format(
+                                account['username']))
     except Exception as e:
         log.exception('Error while downloading remote config: %s.', e)
         raise LoginSequenceFail('Failed while getting remote config version in'
@@ -497,7 +501,8 @@ def pokestop_spinnable(fort, step_location):
     return in_range and not pause_needed
 
 
-def spin_pokestop(api, account, args, fort, step_location):
+def spin_pokestop(args, account_manager, status, api, account, fort,
+                  step_location):
     if not can_spin(account, args.account_max_spins):
         log.warning('Account %s has reached its Pokestop spinning limits.',
                     account['username'])
@@ -516,7 +521,10 @@ def spin_pokestop(api, account, args, fort, step_location):
                 'responses']['CHECK_CHALLENGE'].challenge_url
             if len(captcha_url) > 1:
                 log.debug('Account encountered a reCaptcha.')
-                return False
+
+                if not account_manager.uncaptcha_account(
+                        account, status, api, captcha_url):
+                    return False
 
         spin_result = response['responses']['FORT_SEARCH'].result
         if spin_result == 1:
@@ -654,90 +662,3 @@ def parse_level_up_rewards(api, account):
     else:
         log.error('Error collecting rewards of account %s.',
                   account['username'])
-
-
-# The AccountSet returns a scheduler that cycles through different
-# sets of accounts (e.g. L30). Each set is defined at runtime, and is
-# (currently) used to separate regular accounts from L30 accounts.
-# TODO: Migrate the old account Queue to a real AccountScheduler, preferably
-# handled globally via database instead of per instance.
-# TODO: Accounts in the AccountSet are exempt from things like the
-# account recycler thread. We could've hardcoded support into it, but that
-# would have added to the amount of ugly code. Instead, we keep it as is
-# until we have a proper account manager.
-class AccountSet(object):
-
-    def __init__(self, kph):
-        self.sets = {}
-
-        # Scanning limits.
-        self.kph = kph
-
-        # Thread safety.
-        self.next_lock = Lock()
-
-    # Set manipulation.
-    def create_set(self, name, values=None):
-        if values is None:
-            values = []
-        if name in self.sets:
-            raise Exception('Account set ' + name + ' is being created twice.')
-
-        self.sets[name] = values
-
-    # Release an account back to the pool after it was used.
-    def release(self, account):
-        if 'in_use' not in account:
-            log.error('Released account %s back to the AccountSet,'
-                      + " but it wasn't locked.",
-                      account['username'])
-        else:
-            account['in_use'] = False
-
-    # Get next account that is ready to be used for scanning.
-    def next(self, set_name, coords_to_scan):
-        # Yay for thread safety.
-        with self.next_lock:
-            # Readability.
-            account_set = self.sets[set_name]
-
-            # Loop all accounts for a good one.
-            now = default_timer()
-
-            for i in range(len(account_set)):
-                account = account_set[i]
-
-                # Make sure it's not in use.
-                if account.get('in_use', False):
-                    continue
-
-                # Make sure it's not captcha'd.
-                if account.get('captcha', False):
-                    continue
-
-                # Check if we're below speed limit for account.
-                last_scanned = account.get('last_scanned', False)
-
-                if last_scanned and self.kph > 0:
-                    seconds_passed = now - last_scanned
-                    old_coords = account.get('last_coords', coords_to_scan)
-
-                    distance_m = distance(old_coords, coords_to_scan)
-
-                    cooldown_time_sec = distance_m / self.kph * 3.6
-
-                    # Not enough time has passed for this one.
-                    if seconds_passed < cooldown_time_sec:
-                        continue
-
-                # We've found an account that's ready.
-                account['last_scanned'] = now
-                account['last_coords'] = coords_to_scan
-                account['in_use'] = True
-
-                return account
-
-        # TODO: Instead of returning False, return the amount of min. seconds
-        # the instance needs to wait until the first account becomes available,
-        # so it doesn't need to keep asking if we know we need to wait.
-        return False

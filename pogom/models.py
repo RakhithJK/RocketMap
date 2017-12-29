@@ -116,327 +116,31 @@ class Account(LatLongModel):
     captcha = BooleanField(index=True, default=False)
     fail = BooleanField(index=True, default=False)
     shadowban = BooleanField(index=True, default=False)
-    warn = BooleanField(index=True, default=False)
-    banned = BooleanField(index=True, default=False)
+    warning = BooleanField(index=True, default=False)
+    banned = SmallIntegerField(index=True, default=0)
     level = SmallIntegerField(index=True, default=0)
     last_scan = DateTimeField(index=True, null=True)
     last_modified = DateTimeField(index=True, default=datetime.utcnow)
 
-    # Clears all DB accounts, used when --clear-db-accounts
     @staticmethod
-    def clear_all():
-        return DeleteQuery(Account).execute()
-
-    # Gets requested accounts from DB, sorted by lowest level and
-    # oldest last_modified. Mark allocated accounts with instance_id.
-    @staticmethod
-    def get_accounts(number, min_level=1, max_level=40, init=False):
-        query = []
-        accounts = []
-        # Try to re-use previous accounts for this instance
-        if init:
-            Account.reset_instance(keep_instance_name=True)
-            query = (Account
-                     .select()
-                     .where((Account.instance_id == args.instance_id) &
-                            (Account.fail == 0) &
-                            (Account.shadowban == 0) &
-                            (Account.banned == 0) &
-                            (Account.level >= min_level) &
-                            (Account.level <= max_level))
-                     .order_by(Account.level.asc(),
-                               Account.last_modified.asc())
-                     .limit(number)
-                     .dicts())
-
-        if len(query) != number:  # Not exact same config? Get new accounts!
-            query = (Account
-                     .select()
-                     .where((Account.allocated == 0) &
-                            (Account.fail == 0) &
-                            (Account.shadowban == 0) &
-                            (Account.banned == 0) &
-                            (Account.level >= min_level) &
-                            (Account.level <= max_level))
-                     .order_by(Account.level.asc(),
-                               Account.last_modified.asc())
-                     .limit(number)
-                     .dicts())
-
-        if len(query):
-            # Directly set accounts to allocated with the instance_id
-            usernames = [dba['username'] for dba in query]
-            (Account.update(allocated=True,
-                            instance_id=args.instance_id)
-                    .where((Account.username << usernames))
-                    .execute())
-
-            for a in query:
-                accounts.append(a)
-                a['db_level'] = a['level']
-
-            # Sets free all instance-flagged accounts which are not used now
-            if init:
-                (Account.update(allocated=False, instance_id=None)
-                        .where((Account.instance_id == args.instance_id) &
-                               ~(Account.username << usernames))
-                        .execute())
-
-        log.debug('Got {} accounts.'.format(len(accounts)))
-
-        return accounts
-
-    @staticmethod
-    def get_hlvl_account(target_location):
-        hlvl_account = None
-        query = (Account
-                 .select()
-                 .where((Account.allocated == 0) &
-                        (Account.fail == 0) &
-                        (Account.shadowban == 0) &
-                        (Account.banned == 0) &
-                        (Account.level == 30))
-                 .order_by(Account.last_modified.asc())
-                 .limit(10)  # Don't spend too much time checking accounts.
-                 .dicts())
-
-        if not query:
-            log.warning('Found no available high-level accounts in database.')
-            return hlvl_account
-
-        min_distance = 100000000
-        for account in query:
-            location = (account['latitude'], account['longitude'])
-            meters = distance(target_location, location)
-            if meters < min_distance:
-                min_distance = meters
-                hlvl_account = account
-
-        if hlvl_account:
-            (Account.update(allocated=True, instance_id=args.instance_id)
-                    .where(Account.username == hlvl_account['username'])
-                    .execute())
-
-        return hlvl_account
-
-    # Fetches all captcha'd accounts for captcha handling (later)
-    @staticmethod
-    def get_captchad():
-        query = Account.select().where((Account.captcha == 1)).dicts()
-        return list(query.values())
-
-    @staticmethod
-    def parse_accounts_csv(filename):
-        csv_lines = []
-        with open(filename, 'r') as file:
-            csv_lines = file.read().splitlines()
-
-        if not csv_lines:
-            log.error('Accounts CSV file "%s" could not be read.', filename)
-            return False
-
-        accounts = []
-        num_fields = -1
-        error = False
-        for num, line in enumerate(csv_lines, 1):
-            line = line.strip()
-
-            # Ignore blank lines and comment lines.
-            if len(line) == 0 or line.startswith('#'):
-                continue
-
-            fields = line.split(",")
-            fields = map(str.strip, fields)
-            if num_fields < 0:
-                num_fields = len(fields)
-
-            if num_fields != len(fields):
-                log.error((
-                    'File "%s" has an error on line "%d": ' +
-                    'field count must remain constant across all lines.'),
-                    filename, num)
-                error = True
-                continue
-
-            if num_fields == 2:
-                account = {
-                    'auth_service': 'ptc',
-                    'username': fields[0],
-                    'password': fields[1],
-                    'level': 1
-                }
-                accounts.append(account)
-
-            elif num_fields == 3 or num_fields == 4:
-                auth_service = fields[0].lower()
-                if auth_service != 'ptc' and auth_service != 'google':
-                    log.error((
-                        'File "%s" has an error on line "%d": ' +
-                        'first field must be either "ptc" or "google."'),
-                        filename, num)
-                    error = True
-                    continue
-
-                level = 1
-                # Check if account level is present.
-                if num_fields == 4 and fields[3]:
-                    if not fields[3].isdigit():
-                        log.error((
-                            'File "%s" has an error on line "%d": ' +
-                            'last field must contain the account level.'),
-                            filename, num)
-                        error = True
-                        continue
-
-                    level = int(fields[3])
-                    if level < 1 or level > 40:
-                        log.error((
-                            'File "%s" has an error on line "%d": ' +
-                            'account level must be between 1 and 40.'),
-                            filename, num)
-                        error = True
-                        continue
-
-                account = {
-                    'auth_service': fields[0],
-                    'username': fields[1],
-                    'password': fields[2],
-                    'level': level
-                }
-                accounts.append(account)
-            else:
-                log.error((
-                    'File "%s" has an error on line "%d": ' +
-                    'invalid field count, check syntax.'), filename, num)
-                error = True
-                continue
-
-        if error:
-            return False
-
-        return accounts
-
-    # Compares newly specified accounts from csv with existing DB accounts
-    @staticmethod
-    def insert_new(accounts):
-        log.info('Processing %d accounts into the database.',
-                 len(accounts))
-
-        new_accounts = []
-        if accounts:
-            if args.db_type == 'mysql':
-                step = 250
-            else:
-                # SQLite has a default max number of parameters of 999,
-                # so we need to limit how many rows we insert for it.
-                step = 50
-
-            usernames = [a['username'] for a in accounts]
-
-            query = (Account
-                     .select(Account.username)
-                     .where(Account.username << usernames)
-                     .dicts())
-
-            db_usernames = [dbu['username'] for dbu in query]
-
-            for a in accounts:
-                if a['username'] in db_usernames:
-                    # Skip accounts already on database.
-                    continue
-
-                new_accounts.append(a)
-
-            with Account.database().atomic():
-                for idx in range(0, len(new_accounts), step):
-                    Account.insert_many(new_accounts[idx:idx+step]).execute()
-
-        log.info('Inserted %d new accounts into the database.',
-                 len(new_accounts))
-
-    # Updates the DB account after an action to show it's still in use
-    @staticmethod
-    def heartbeat(account):
-        (Account(username=account['username'],
-                 allocated=True,
-                 instance_id=args.instance_id,
-                 last_modified=datetime.utcnow())
-         .save())
-
-    # Resets all instance-flagged accounts to set them free for re-use
-    @staticmethod
-    def reset_instance(keep_instance_name=False):
-        instance_name = args.instance_id if keep_instance_name else None
-        (Account.update(allocated=False, instance_id=instance_name)
-                .where(Account.instance_id == args.instance_id)
-                .execute())
-
-    @staticmethod
-    def set_level(account):
-        (Account(username=account['username'],
-                 level=account['level'])
-         .save())
-        account['db_level'] = account['level']
-
-    # Resets instance-flags of accounts to set them free for re-use
-    @staticmethod
-    def set_free(account):
-        (Account(username=account['username'],
-                 allocated=False,
-                 instance_id=None)
-         .save())
-
-    # Sets or resets the captcha flag of an account
-    @staticmethod
-    def set_captcha(account, captcha=True):
-        (Account(username=account['username'],
-                 captcha=captcha)
-         .save())
-
-    # Sets the fail flag of an account when getting removed from queue for
-    # uncertain reason. Re-use is possible.
-    @staticmethod
-    def set_fail(account):
-        (Account(username=account['username'],
-                 allocated=False,
-                 fail=True)
-         .save())
-        (WorkerStatus
-         .delete()
-         .where((WorkerStatus.username == account['username']))
-         .execute())
-
-    # Sets the shadowban flag of an account
-    @staticmethod
-    def set_shadowban(account):
-        (Account(username=account['username'],
-                 allocated=False,
-                 shadowban=True)
-         .save())
-        (WorkerStatus
-         .delete()
-         .where((WorkerStatus.username == account['username']))
-         .execute())
-
-    # Sets the warn flag of an account. Usage still possible in the future.
-    @staticmethod
-    def set_warn(account):
-        (Account(username=account['username'],
-                 warn=True)
-         .save())
-
-    # Sets the ban flag of an account. Re-use impossible.
-    @staticmethod
-    def set_banned(account):
-        (Account(username=account['username'],
-                 allocated=False,
-                 instance_id=None,
-                 banned=True)
-         .save())
-        (WorkerStatus
-         .delete()
-         .where((WorkerStatus.username == account['username']))
-         .execute())
+    def db_format(account):
+        account['last_modified'] = datetime.utcnow()
+        return {
+            'auth_service': account['auth_service'],
+            'username': account['username'],
+            'password': account['password'],
+            'instance_id': account.get('instance_id', None),
+            'allocated': account.get('allocated', False),
+            'latitude': account.get('latitude', None),
+            'longitude': account.get('longitude', None),
+            'captcha': account.get('captcha', False),
+            'fail': account.get('fail', False),
+            'shadowban': account.get('shadowban', False),
+            'warning': account.get('warning', False),
+            'banned': account.get('banned', 0),
+            'level': account['level'],
+            'last_scan': account.get('last_scan', None),
+            'last_modified': account['last_modified']}
 
 
 class Pokemon(LatLongModel):
@@ -2170,7 +1874,8 @@ def hex_bounds(center, steps=None, radius=None):
 
 # todo: this probably shouldn't _really_ be in "models" anymore, but w/e.
 def parse_map(args, map_dict, scan_coords, scan_location, db_update_queue,
-              wh_update_queue, key_scheduler, api, status, now_date, account):
+              wh_update_queue, key_scheduler, api, status, now_date, account,
+              account_manager):
     pokemon = {}
     pokestops = {}
     gyms = {}
@@ -2597,11 +2302,13 @@ def parse_map(args, map_dict, scan_coords, scan_location, db_update_queue,
                             wh_update_queue.put(('raid', wh_raid))
 
         # Let db do it's things while we try to spin.
+        # XXX: this stinks... move it out of parse_map
         if args.pokestop_spinning:
             for f in forts:
                 # Spin Pokestop with 50% chance.
                 if f.type == 1 and pokestop_spinnable(f, scan_coords):
-                    spin_pokestop(api, account, args, f, scan_coords)
+                    spin_pokestop(
+                        args, account_manager, status, api, account, f)
 
         # Helping out the GC.
         del forts
