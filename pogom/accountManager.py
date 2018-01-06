@@ -535,6 +535,7 @@ class AccountManager(object):
         if not self.args.captcha_solving:
             # Update account information in database.
             account['captcha'] = True
+            account['fail'] = True
             self.dbq.put((Account, {0: Account.db_format(account)}))
             # Remove account from rotation.
             if not self.remove_account(username):
@@ -567,6 +568,7 @@ class AccountManager(object):
 
             # Update account information in database.
             account['captcha'] = True
+            account['fail'] = True
             self.dbq.put((Account, {0: Account.db_format(account)}))
 
             # Remove account from rotation.
@@ -574,7 +576,12 @@ class AccountManager(object):
                 log.error('Account %s was not active.', username)
                 return False
 
-            self.accounts['failed'].append((account, 'captcha failed'))
+            self.accounts['failed'].append((account, 'captcha fail'))
+            status['message'] = (
+                'Account {} has encountered a captcha. ' +
+                'Failed to uncaptcha, putting account away.').format(username)
+            log.warning(status['message'])
+
             return False
         else:
             # Update account information in database.
@@ -591,6 +598,7 @@ class AccountManager(object):
                 'Account {} has encountered a captcha. ' +
                 'Waiting for token.').format(username)
             log.warning(status['message'])
+
             if 'captcha' in self.args.wh_types:
                 wh_message = {
                     'status_name': self.args.status_name,
@@ -601,6 +609,7 @@ class AccountManager(object):
                     'time': self.args.manual_captcha_timeout
                 }
                 self.whq.put(('captcha', wh_message))
+
             return False
 
     # Returns true if captcha was succesfully solved.

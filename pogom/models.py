@@ -1874,7 +1874,7 @@ def hex_bounds(center, steps=None, radius=None):
 
 # todo: this probably shouldn't _really_ be in "models" anymore, but w/e.
 def parse_map(args, map_dict, scan_coords, scan_location, db_update_queue,
-              wh_update_queue, key_scheduler, api, status, now_date, account,
+              wh_update_queue, api, status, now_date, account,
               account_manager):
     pokemon = {}
     pokestops = {}
@@ -1882,7 +1882,7 @@ def parse_map(args, map_dict, scan_coords, scan_location, db_update_queue,
     raids = {}
     skipped = 0
     filtered = 0
-    stopsskipped = 0
+    stops_skipped = 0
     forts = []
     forts_count = 0
     wild_pokemon = []
@@ -2058,7 +2058,7 @@ def parse_map(args, map_dict, scan_coords, scan_location, db_update_queue,
             pokemon_info = False
             if args.encounter and (pokemon_id in args.enc_whitelist):
                 pokemon_info = encounter_pokemon(
-                    args, p, account, api, status, key_scheduler)
+                    args, account_manager, status, api, account, p)
 
             pokemon[p.encounter_id] = {
                 'encounter_id': p.encounter_id,
@@ -2156,7 +2156,7 @@ def parse_map(args, map_dict, scan_coords, scan_location, db_update_queue,
                         in encountered_pokestops):
                     # If pokestop has been encountered before and hasn't
                     # changed don't process it.
-                    stopsskipped += 1
+                    stops_skipped += 1
                     continue
                 pokestops[f.id] = {
                     'pokestop_id': f.id,
@@ -2302,7 +2302,6 @@ def parse_map(args, map_dict, scan_coords, scan_location, db_update_queue,
                             wh_update_queue.put(('raid', wh_raid))
 
         # Let db do it's things while we try to spin.
-        # XXX: this stinks... move it out of parse_map
         if args.pokestop_spinning:
             for f in forts:
                 # Spin Pokestop with 50% chance.
@@ -2318,11 +2317,11 @@ def parse_map(args, map_dict, scan_coords, scan_location, db_update_queue,
              len(pokemon) + skipped,
              filtered,
              nearby_pokemon,
-             len(pokestops) + stopsskipped,
+             len(pokestops) + stops_skipped,
              len(gyms),
              len(raids))
 
-    log.debug('Skipped Pokemon: %d, pokestops: %d.', skipped, stopsskipped)
+    log.debug('Skipped Pokemon: %d, pokestops: %d.', skipped, stops_skipped)
 
     # Look for spawnpoints within scan_loc that are not here to see if we
     # can narrow down tth window.
@@ -2373,13 +2372,6 @@ def parse_map(args, map_dict, scan_coords, scan_location, db_update_queue,
 
     db_update_queue.put((ScannedLocation, {0: scan_location}))
 
-    # TODO: When search cycle is over we update account, not here.
-    '''
-    # Show the DB this account is still in use
-    Account.heartbeat(account)
-    if account['level'] > account['db_level']:
-        Account.set_level(account)
-    '''
     if pokemon:
         db_update_queue.put((Pokemon, pokemon))
     if pokestops:
@@ -2394,27 +2386,16 @@ def parse_map(args, map_dict, scan_coords, scan_location, db_update_queue,
         if sightings:
             db_update_queue.put((SpawnpointDetectionData, sightings))
 
-    if not nearby_pokemon and not wild_pokemon:
-        # After parsing the forts, we'll mark this scan as bad due to
-        # a possible speed violation.
-        return {
-            'count': wild_pokemon_count + forts_count,
-            'gyms': gyms,
-            'sp_id_list': sp_id_list,
-            'bad_scan': True,
-            'scan_secs': now_secs
-        }
-
     return {
         'count': wild_pokemon_count + forts_count,
         'gyms': gyms,
         'sp_id_list': sp_id_list,
-        'bad_scan': False,
+        'bad_scan': (not nearby_pokemon and not wild_pokemon),
         'scan_secs': now_secs
     }
 
 
-def encounter_pokemon(args, pokemon, account, api, status, key_scheduler):
+def encounter_pokemon(args, account_manager, status, api, account, pokemon):
     using_db_account = False
     hlvl_account = None
     pokemon_id = None
@@ -2430,10 +2411,8 @@ def encounter_pokemon(args, pokemon, account, api, status, key_scheduler):
             hlvl_api = api
         else:
             using_db_account = True
-            # TODO: Fetch lvl 30 account from database instead, based on
-            # location and last time used.
             # Get account to use for IV and CP scanning.
-            hlvl_account = Account.get_hlvl_account(scan_location)
+            hlvl_account = account_manager.get_account(scan_location, True)
 
         time.sleep(args.encounter_delay)
 
@@ -2448,14 +2427,11 @@ def encounter_pokemon(args, pokemon, account, api, status, key_scheduler):
                  pokemon_id, hlvl_account['username'], scan_location[0],
                  scan_location[1])
 
-        # TODO: Find a way to re-use pgoapi - hlvl account queue + scheduler
-        '''
         # If not args.no_api_store is enabled, we need to
         # re-use an old API object if it's stored and we're
         # using an account from the AccountSet.
         if not args.no_api_store and using_db_account:
             hlvl_api = hlvl_account.get('api', None)
-        '''
 
         # Make new API for this account if we're not using an
         # API that's already logged in.
@@ -2477,7 +2453,7 @@ def encounter_pokemon(args, pokemon, account, api, status, key_scheduler):
         # Hashing key.
         # TODO: Rework inefficient threading.
         if args.hash_key:
-            key = key_scheduler.next()
+            key = account_manager.key_scheduler.next()
             log.debug('Using hashing key %s for this encounter.', key)
             hlvl_api.activate_hash_server(key)
 
@@ -2507,17 +2483,13 @@ def encounter_pokemon(args, pokemon, account, api, status, key_scheduler):
         # Handle errors.
         if encounter_result:
             enc_responses = encounter_result['responses']
-            # Check for captcha.
+            # Check for reCaptcha.
             if 'CHECK_CHALLENGE' in enc_responses:
                 captcha_url = enc_responses['CHECK_CHALLENGE'].challenge_url
-
-                # Throw warning but finish parsing.
                 if len(captcha_url) > 1:
-                    # Flag account.
-                    hlvl_account['captcha'] = True
-                    log.error('Account %s encountered a captcha.' +
-                              ' Account will not be used.',
-                              hlvl_account['username'])
+                    if not account_manager.uncaptcha_account(
+                            hlvl_account, status, api, captcha_url):
+                        return False
 
             if ('ENCOUNTER' in enc_responses and
                     enc_responses['ENCOUNTER'].status != 1):
@@ -2548,10 +2520,9 @@ def encounter_pokemon(args, pokemon, account, api, status, key_scheduler):
                       pokemon_id,
                       e)
 
-    # We're done with the encounter. If it's from an
-    # AccountSet, release account back to the pool.
+    # We're done with the encounter, release account back to the pool.
     if using_db_account:
-        Account.set_free(hlvl_account)
+        account_manager.release_account(hlvl_account)
 
     return result
 

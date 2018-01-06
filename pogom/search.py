@@ -961,9 +961,8 @@ def search_worker_thread(args, account_manager, control_flags, status,
                                 response_dict = gmo(api, account, scan_coords)
 
                     parsed = parse_map(args, response_dict, scan_coords,
-                                       scan_location, dbq, whq, key_scheduler,
-                                       api, status, scan_date, account,
-                                       account_manager)
+                                       scan_location, dbq, whq, api, status,
+                                       scan_date, account, account_manager)
 
                     scheduler.task_done(status, parsed)
                     if parsed['count'] > 0:

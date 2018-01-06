@@ -501,18 +501,18 @@ def pokestop_spinnable(fort, step_location):
     return in_range and not pause_needed
 
 
-def spin_pokestop(args, account_manager, status, api, account, fort,
-                  step_location):
+def spin_pokestop(args, account_manager, status, api, account, fort):
     if not can_spin(account, args.account_max_spins):
         log.warning('Account %s has reached its Pokestop spinning limits.',
                     account['username'])
         return False
     # Set 50% Chance to spin a Pokestop.
     if random.random() > 0.5 or account['level'] == 1:
+        location = (account['latitude'], account['longitude'])
         time.sleep(random.uniform(0.8, 1.8))
         fort_details(api, account, fort)
         time.sleep(random.uniform(0.8, 1.8))  # Don't let Niantic throttle.
-        response = fort_search(api, account, fort, step_location)
+        response = fort_search(api, account, fort, location)
         time.sleep(random.uniform(2, 4))  # Don't let Niantic throttle.
 
         # Check for reCaptcha.
