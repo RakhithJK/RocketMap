@@ -438,7 +438,7 @@ def main():
                          args.accounts_csv)
             sys.exit(1)
         else:
-            account_manager.insert_new(accounts)
+            account_manager.insert_new(accounts.values())
 
     if not args.only_server:
         # Speed limit.

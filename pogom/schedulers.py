@@ -668,9 +668,10 @@ class SpeedScan(HexSearch):
 
     # How long to delay since last action
     def delay(self, last_scan_date):
-        return min(max(((last_scan_date - datetime.utcnow()).total_seconds() +
-                       self.args.scan_delay), 10),
-                   90)
+        return max(
+            ((last_scan_date - datetime.utcnow()).total_seconds() +
+             self.args.scan_delay),
+            2)
 
     def band_status(self):
         try:
@@ -772,7 +773,7 @@ class SpeedScan(HexSearch):
                     self.scans.keys(), self.location_change_date)
 
                 for sp in spawnpoints:
-                    if sp['missed_count'] > 10:
+                    if sp['missed_count'] > 5:
                         continue
 
                     self.active_sp += 1

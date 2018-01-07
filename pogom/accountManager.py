@@ -334,12 +334,8 @@ class AccountManager(object):
 
     # Filter account list and insert new accounts in the database.
     def insert_new(self, accounts):
-        if self.args.db_type == 'mysql':
-            step = 250
-        else:
-            step = 50
-
         log.info('Processing %d accounts into the database.', len(accounts))
+        step = 250
         count = 0
         for idx in range(0, len(accounts), step):
             accounts_batch = accounts[idx:idx+step]
@@ -406,10 +402,7 @@ class AccountManager(object):
 
     # Flag accounts that are going to be used by this instance.
     def allocate_accounts(self, accounts):
-        if self.args.db_type == 'mysql':
-            step = 250
-        else:
-            step = 50
+        step = 250
 
         if len(accounts) > 0:
             usernames = accounts.keys()

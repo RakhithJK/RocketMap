@@ -807,10 +807,16 @@ def parse_accounts_csv(filename):
         log.error('Accounts CSV file "%s" could not be read.', filename)
         return False
 
-    accounts = []
+    accounts = {}
     num_fields = -1
     error = False
     for num, line in enumerate(csv_lines, 1):
+        account = {
+            'auth_service': 'ptc',
+            'username': '',
+            'password': '',
+            'level': 0
+        }
         line = line.strip()
 
         # Ignore blank lines and comment lines.
@@ -831,13 +837,9 @@ def parse_accounts_csv(filename):
             continue
 
         if num_fields == 2:
-            account = {
-                'auth_service': 'ptc',
-                'username': fields[0],
-                'password': fields[1],
-                'level': 0
-            }
-            accounts.append(account)
+            account['username'] = fields[0]
+            account['password'] = fields[1]
+            accounts[fields[0]] = account
 
         elif num_fields == 3 or num_fields == 4:
             auth_service = fields[0].lower()
@@ -868,14 +870,12 @@ def parse_accounts_csv(filename):
                         filename, num)
                     error = True
                     continue
+                account['level'] = level
 
-            account = {
-                'auth_service': fields[0],
-                'username': fields[1],
-                'password': fields[2],
-                'level': level
-            }
-            accounts.append(account)
+            account['auth_service'] = fields[0]
+            account['username'] = fields[1]
+            account['password'] = fields[2]
+            accounts[fields[1]] = account
         else:
             log.error((
                 'File "%s" has an error on line "%d": ' +

@@ -117,8 +117,8 @@ class Account(LatLongModel):
     captcha = BooleanField(index=True, default=False)
     fail = BooleanField(index=True, default=False)
     warning = BooleanField(index=True, default=False)
-    banned = SmallIntegerField(index=True, default=0)
-    level = SmallIntegerField(index=True, default=AccountBanned.Clear)
+    banned = SmallIntegerField(index=True, default=AccountBanned.Clear)
+    level = SmallIntegerField(index=True, default=0)
     last_scan = DateTimeField(index=True, null=True)
     last_modified = DateTimeField(index=True, default=datetime.utcnow)
 
@@ -2493,7 +2493,7 @@ def encounter_pokemon(args, account_manager, status, api, account, pokemon):
                 captcha_url = enc_responses['CHECK_CHALLENGE'].challenge_url
                 if len(captcha_url) > 1:
                     if not account_manager.uncaptcha_account(
-                            hlvl_account, status, api, captcha_url):
+                            hlvl_account, status, hlvl_api, captcha_url):
                         return False
 
             if ('ENCOUNTER' in enc_responses and
