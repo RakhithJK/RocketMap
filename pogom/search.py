@@ -731,8 +731,9 @@ def search_worker_thread(args, account_manager, control_flags, status,
             stagger_thread(args.login_delay)
             account = account_manager.get_account()
             if not account:
-                status['message'] = 'Waiting for an account to scan.'
-                log.info(status['message'])
+                if status['username'] == '':
+                    status['message'] = 'Waiting for an account to scan.'
+                    log.info(status['message'])
                 time.sleep(60)
                 continue
 
@@ -743,7 +744,7 @@ def search_worker_thread(args, account_manager, control_flags, status,
             else:
                 status.update({
                     'username': account['username'],
-                    'last_modified': datetime.utcnow(),
+                    'last_modified': account['last_modified'],
                     'last_scan_date': datetime.utcnow(),
                     'latitude': account['latitude'],
                     'longitude': account['longitude']
@@ -926,7 +927,7 @@ def search_worker_thread(args, account_manager, control_flags, status,
                 status['longitude'] = scan_coords[1]
                 dbq.put((WorkerStatus, {0: WorkerStatus.db_format(status)}))
 
-                # TODO: refactor/cleanup status.
+                # Update account information.
                 account['latitude'] = scan_coords[0]
                 account['longitude'] = scan_coords[1]
                 account['last_scan'] = scan_date

@@ -422,8 +422,9 @@ def main():
             t.start()
 
     # Create account manager.
-    account_manager = AccountManager(
-        args, db_updates_queue, wh_updates_queue)
+    if not args.only_server:
+        account_manager = AccountManager(
+            args, db_updates_queue, wh_updates_queue)
 
     # Clear all accounts from the database.
     if args.clear_db_accounts:

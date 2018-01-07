@@ -30,7 +30,8 @@ from .utils import (distance, get_pokemon_name, get_pokemon_types,
 from .transform import transform_from_wgs_to_gcj, get_new_coords
 from .customLog import printPokemon
 
-from .account import check_login, setup_api, pokestop_spinnable, spin_pokestop
+from .account import (AccountBanned, check_login, setup_api,
+                      pokestop_spinnable, spin_pokestop)
 from .proxy import get_new_proxy
 from .apiRequests import encounter
 
@@ -115,10 +116,9 @@ class Account(LatLongModel):
     longitude = DoubleField(null=True)
     captcha = BooleanField(index=True, default=False)
     fail = BooleanField(index=True, default=False)
-    shadowban = BooleanField(index=True, default=False)
     warning = BooleanField(index=True, default=False)
     banned = SmallIntegerField(index=True, default=0)
-    level = SmallIntegerField(index=True, default=0)
+    level = SmallIntegerField(index=True, default=AccountBanned.Clear)
     last_scan = DateTimeField(index=True, null=True)
     last_modified = DateTimeField(index=True, default=datetime.utcnow)
 
@@ -135,9 +135,8 @@ class Account(LatLongModel):
             'longitude': account.get('longitude', None),
             'captcha': account.get('captcha', False),
             'fail': account.get('fail', False),
-            'shadowban': account.get('shadowban', False),
             'warning': account.get('warning', False),
-            'banned': account.get('banned', 0),
+            'banned': account.get('banned', AccountBanned.Clear),
             'level': account['level'],
             'last_scan': account.get('last_scan', None),
             'last_modified': account['last_modified']}
@@ -2466,14 +2465,20 @@ def encounter_pokemon(args, account_manager, status, api, account, pokemon):
 
         # Log in.
         check_login(args, hlvl_account, hlvl_api, status['proxy_url'])
-        encounter_level = hlvl_account['level']
 
-        # User error -> we skip freeing the account.
-        if encounter_level < 30:
+        # Account was inserted as being high-level but it's not.
+        if hlvl_account['level'] < 30:
             log.warning('Expected account of level 30 or higher, ' +
                         'but account %s is only level %d',
-                        hlvl_account['username'], encounter_level)
+                        hlvl_account['username'], hlvl_account['level'])
+            account_manager.failed_account(hlvl_account, 'not hlvl')
             return False
+
+        if using_db_account:
+            # Update account information.
+            hlvl_account['latitude'] = scan_location[0]
+            hlvl_account['longitude'] = scan_location[1]
+            hlvl_account['last_scan'] = datetime.utcnow()
 
         # Encounter Pokémon.
         encounter_result = encounter(
@@ -2511,14 +2516,13 @@ def encounter_pokemon(args, account_manager, status, api, account, pokemon):
                 result = pokemon_info
 
     except Exception as e:
-        # Account may not be selected yet.
-        if hlvl_account:
-            log.warning('Exception occured during encounter with'
-                        ' high-level account %s.',
-                        hlvl_account['username'])
-        log.exception('There was an error encountering Pokemon ID %s: %s.',
-                      pokemon_id,
-                      e)
+        log.exception('There was an exception encountering Pokemon ID %s ' +
+                      'with account %s: %s.',
+                      pokemon_id, hlvl_account['username'], e)
+        # Signal account manager that this account has failed.
+        if using_db_account:
+            account_manager.failed_account(hlvl_account, 'exception')
+        return False
 
     # We're done with the encounter, release account back to the pool.
     if using_db_account:

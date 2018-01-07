@@ -12,6 +12,7 @@ from .fakePogoApi import FakePogoApi
 from .pgoapiwrapper import PGoApiWrapper
 from .utils import in_radius, generate_device_info
 from .proxy import get_new_proxy
+
 from .apiRequests import (send_generic_request, fort_details,
                           recycle_inventory_item, use_item_egg_incubator,
                           release_pokemon, level_up_rewards, fort_search,
@@ -26,6 +27,14 @@ class TooManyLoginAttempts(Exception):
 
 class LoginSequenceFail(Exception):
     pass
+
+
+# Keep track of different types of bans using a single field.
+class AccountBanned:
+    Clear = 0
+    Shadowban = 1
+    Temporary = 2
+    Permanent = 3
 
 
 # Create the API object that'll be used to scan.
@@ -69,6 +78,7 @@ def setup_api(args, status, account):
 
 # Use API to check the login status, and retry the login if possible.
 def check_login(args, account, api, proxy_url):
+    login_attempts = account.get('login_attempts', 0)
     # Logged in? Enough time left? Cool!
     if api._auth_provider and api._auth_provider._access_token:
         remaining_time = api._auth_provider._access_token_expiry - time.time()
@@ -110,8 +120,17 @@ def check_login(args, account, api, proxy_url):
     if num_tries > args.login_retries:
         log.error('Failed to login to Pokemon Go with account %s in %d tries.',
                   account['username'], num_tries)
-        raise TooManyLoginAttempts('Exceeded login attempts.')
+        account['login_attempts'] = login_attempts + 1
+        if account['login_attempts'] < 5:
+            raise TooManyLoginAttempts('Exceeded login attempts.')
+        else:
+            message = 'Account has a permanent ban: {} failed logins.'.format(
+                args.login_retries * 5)
+            log.error(message)
+            account['banned'] = AccountBanned.Permanent
+            raise AccountBannedException(message)
 
+    account['login_attempts'] = 0
     time.sleep(random.uniform(2, 4))
 
     # Simulate login sequence.
@@ -180,7 +199,7 @@ def rpc_login_sequence(args, api, account):
         total_req += 1
         time.sleep(random.uniform(.53, 1.1))
     except AccountBannedException as e:
-        account['banned'] = 1
+        account['banned'] = AccountBanned.Temporary
         log.exception('Error while downloading remote config: %s.', e)
         raise LoginSequenceFail('Account {} is temporarily banned.'.format(
                                 account['username']))

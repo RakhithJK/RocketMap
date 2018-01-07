@@ -62,7 +62,7 @@ def get_args():
                         is_config_file=True, help='Set configuration file')
     parser.add_argument('-scf', '--shared-config',
                         is_config_file=True, help='Set a shared config')
-    parser.add_argument('-w', '--workers', type=int, required=True,
+    parser.add_argument('-w', '--workers', type=int,
                         help='Number of search worker threads to start.')
     parser.add_argument('-hw', '--hlvl-workers', type=int, default=0,
                         help='Number of high level accounts to allocate.')

@@ -9,7 +9,8 @@ from datetime import datetime, timedelta
 from requests import Session
 from threading import Lock, Thread
 
-from .account import check_login
+from .account import AccountBanned, check_login
+from .altitude import get_altitude
 from .models import Account, Token
 from .proxy import get_new_proxy
 from .utils import distance
@@ -44,7 +45,7 @@ class AccountManager(object):
         self.accounts_lock = Lock()
 
         self.release_instance()
-        self.replenish_accounts()
+        self.account_keeper(notice=True)
 
         # Start account manager thread.
         log.info('Starting account manager thread...')
@@ -69,8 +70,8 @@ class AccountManager(object):
                 continue
 
             # Run once every 60 seconds.
-            self.replenish_accounts()
-            self.recycle_accounts()
+            self.account_keeper(notice=(cycle % 40 == 0))
+            self.account_recycler()
 
             if cycle % 40 != 0:
                 cycle += 1
@@ -80,7 +81,7 @@ class AccountManager(object):
                 cycle = 1
 
             # Run once every 10 min.
-            self.monitor_accounts()
+            self.account_monitor()
             time.sleep(self.manager_sleep)
 
     def captcha_manager(self):
@@ -173,6 +174,8 @@ class AccountManager(object):
                 api.set_proxy({'http': proxy_url, 'https': proxy_url})
 
         location = (account['latitude'], account['longitude'])
+        altitude = get_altitude(self.args, location)
+        location = (location[0], location[1], altitude)
 
         if self.args.jitter:
             # Jitter location before uncaptcha attempt.
@@ -228,7 +231,24 @@ class AccountManager(object):
         # Let things settle down a bit.
         time.sleep(1)
 
-    def recycle_accounts(self):
+    def account_keeper(self, notice=False):
+        # Check for missing scanning accounts.
+        scan_count = (len(self.accounts['scan']) +
+                      len(self.accounts['active_scan']))
+        scan_missing = self.args.workers - scan_count
+        scan_fetched = self.replenish_accounts(scan_missing, hlvl=False)
+        if notice and scan_fetched < scan_missing:
+            log.error('Insufficient scanner accounts in the database.')
+
+        # Check for missing high-level accounts.
+        hlvl_count = (len(self.accounts['hlvl']) +
+                      len(self.accounts['active_hlvl']))
+        hlvl_missing = self.args.hlvl_workers - hlvl_count
+        hlvl_fetched = self.replenish_accounts(hlvl_missing, hlvl=True)
+        if notice and hlvl_fetched < hlvl_missing:
+            log.error('Insufficient high-level accounts in the database.')
+
+    def account_recycler(self):
         now = datetime.utcnow()
         failed_count = len(self.accounts['failed'])
         log.debug('Account recycler running. Checking status of %d accounts.',
@@ -270,33 +290,41 @@ class AccountManager(object):
                     notified = True
                 self.accounts['failed'].append((account, reason, notified))
 
-    def monitor_accounts(self):
-        # Resets failed accounts after one day.
+    def account_monitor(self):
+        # Reset allocated accounts after one day.
         query = (Account
                  .update(allocated=False, fail=False)
-                 .where((Account.fail == 1) &
-                        (Account.last_modified <
+                 .where((Account.last_modified <
                          (datetime.utcnow() - timedelta(days=1))))
                  .execute())
-        log.debug('Reseted %d old failed accounts.', query)
+        log.debug('Reseted %d old allocated accounts.', query)
 
-        # Resets warning after one week.
+        # Reset warning after one week.
         query = (Account
-                 .update(allocated=False, fail=False, warning=False)
+                 .update(allocated=False, warning=False)
                  .where((Account.warning == 1) &
                         (Account.last_modified <
                          (datetime.utcnow() - timedelta(weeks=1))))
                  .execute())
-        log.debug('Reseted %d warned accounts.', query)
+        log.debug('Reseted warnings on %d accounts.', query)
 
-        # Resets shadowbans after two weeks.
+        # Reset shadow banned accounts after two weeks.
         query = (Account
-                 .update(allocated=False, fail=False, shadowban=False)
-                 .where((Account.shadowban == 1) &
+                 .update(allocated=False, banned=AccountBanned.Clear)
+                 .where((Account.banned == AccountBanned.Shadowban) &
                         (Account.last_modified <
                          (datetime.utcnow() - timedelta(weeks=2))))
                  .execute())
         log.debug('Reseted %d shadow banned accounts.', query)
+
+        # Reset temporarily banned accounts after six weeks.
+        query = (Account
+                 .update(allocated=False, banned=AccountBanned.Clear)
+                 .where((Account.banned == AccountBanned.Temporary) &
+                        (Account.last_modified <
+                         (datetime.utcnow() - timedelta(weeks=6))))
+                 .execute())
+        log.debug('Reseted %d temporarily banned accounts.', query)
 
     # Clears all accounts in the database.
     def clear_all(self):
@@ -346,7 +374,6 @@ class AccountManager(object):
     def load_accounts(self, count, reuse=False, hlvl=False):
         conditions = ((Account.allocated == 0) &
                       (Account.fail == 0) &
-                      (Account.shadowban == 0) &
                       (Account.banned == 0))
         if reuse:
             conditions &= (Account.instance_id == self.instance_id)
@@ -403,6 +430,7 @@ class AccountManager(object):
         return True
 
     # Load and allocate accounts from the database.
+    # TODO: remove try .. except
     def fetch_accounts(self, count, reuse, hlvl):
         accounts = {}
         try:
@@ -426,43 +454,29 @@ class AccountManager(object):
                 self.accounts['scan'][username] = account
         return len(accounts)
 
-    def replenish_accounts(self):
+    def replenish_accounts(self, count, hlvl=False):
+        if hlvl:
+            log.debug('Fetching %d high-level accounts.', count)
+        else:
+            log.debug('Fetching %d scanner accounts.', count)
+        fetch_count = 0
         with self.accounts_lock:
-            # Check for missing scanning accounts.
-            scan_count = (len(self.accounts['scan']) +
-                          len(self.accounts['active_scan']))
-            scan_missing = self.args.workers - scan_count
-            log.debug('Fetching %d scanner accounts.', scan_missing)
-            if scan_missing > 0:
+            if count > 0:
                 fetch_count = self.fetch_accounts(
-                    scan_missing, reuse=True, hlvl=False)
-                scan_missing -= fetch_count
-            if scan_missing > 0:
-                fetch_count = self.fetch_accounts(
-                    scan_missing, reuse=False, hlvl=False)
-                scan_missing -= fetch_count
-            if scan_missing > 0:
-                log.error('Insufficient scanner accounts in the database.')
+                    count, reuse=True, hlvl=hlvl)
+                count -= fetch_count
+            if count > 0:
+                fetch_count += self.fetch_accounts(
+                    count, reuse=False, hlvl=hlvl)
 
-            # Check for missing high-level accounts.
-            hlvl_count = (len(self.accounts['hlvl']) +
-                          len(self.accounts['active_hlvl']))
-            hlvl_missing = self.args.hlvl_workers - hlvl_count
-            log.debug('Fetching %d high-level accounts.', hlvl_missing)
-            if hlvl_missing > 0:
-                fetch_count = self.fetch_accounts(
-                    hlvl_missing, reuse=True, hlvl=True)
-                hlvl_missing -= fetch_count
-            if hlvl_missing > 0:
-                fetch_count = self.fetch_accounts(
-                    hlvl_missing, reuse=False, hlvl=True)
-                hlvl_missing -= fetch_count
-            if hlvl_missing > 0:
-                log.error('Insufficient high-level accounts in the database.')
+        return fetch_count
 
     # Release an account back to the pool after it was used.
     def release_account(self, account):
+        # Update account information in database.
         username = account['username']
+        self.dbq.put((Account, {0: Account.db_format(account)}))
+
         with self.accounts_lock:
             if self.accounts['active_hlvl'].pop(username, None):
                 self.accounts['hlvl'][username] = account
@@ -670,6 +684,7 @@ class AccountManager(object):
             return success
 
     def failed_account(self, account, reason):
+        # Update account information in database.
         username = account['username']
         account['fail'] = True
         self.dbq.put((Account, {0: Account.db_format(account)}))
