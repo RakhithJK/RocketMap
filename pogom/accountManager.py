@@ -364,7 +364,7 @@ class AccountManager(object):
     def load_accounts(self, count, reuse=False, hlvl=False):
         conditions = ((Account.allocated == 0) &
                       (Account.fail == 0) &
-                      (Account.banned == 0))
+                      (Account.banned == AccountBanned.Clear))
         if reuse:
             conditions &= (Account.instance_id == self.instance_id)
         else:
@@ -460,22 +460,30 @@ class AccountManager(object):
 
     # Release an account back to the pool after it was used.
     def release_account(self, account):
-        # Update account information in database.
         username = account['username']
-        self.dbq.put((Account, {0: Account.db_format(account)}))
 
         with self.accounts_lock:
             if self.accounts['active_hlvl'].pop(username, None):
-                self.accounts['hlvl'][username] = account
+                if self.args.hlvl_workers > 0:
+                    self.accounts['hlvl'][username] = account
+                else:
+                    # Mark the account available to be used elsewhere.
+                    account['allocated'] = False
             elif self.accounts['active_scan'].pop(username, None):
                 self.accounts['scan'][username] = account
             else:
                 log.error('Unable to find account %s in account pool.',
                           username)
 
+        # Update account information in database.
+        self.dbq.put((Account, {0: Account.db_format(account)}))
+
     # Get next account that is ready to be used for scanning.
     def get_account(self, location=None, hlvl=False):
         if hlvl:
+            if not self.args.hlvl_workers:
+                # Fetch from the database a spare high-level account.
+                self.replenish_accounts(1, hlvl=True)
             accounts = self.accounts['hlvl']
             accounts_active = self.accounts['active_hlvl']
             speed_limit = self.args.hlvl_kph
@@ -493,7 +501,7 @@ class AccountManager(object):
             for username in reversed(accounts.keys()):
                 account = accounts[username]
                 # Check if we're below speed limit for account.
-                if location and account['last_scan']:
+                if location and speed_limit and account['last_scan']:
                     time_passed = (now - account['last_scan']).total_seconds()
                     old_location = (account['latitude'], account['longitude'])
 
