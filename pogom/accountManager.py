@@ -59,29 +59,23 @@ class AccountManager(object):
         cycle = 0
         time.sleep(60)
         while True:
-            # Run once every 15 seconds.
             self.manager_sleep = 15
+            cycle += 1
+
+            # Run once every 15 seconds.
             if self.args.captcha_solving:
                 self.captcha_manager()
 
-            if cycle % 4 != 0:
-                cycle += 1
-                time.sleep(self.manager_sleep)
-                continue
-
             # Run once every 60 seconds.
-            self.account_keeper(notice=(cycle % 40 == 0))
-            self.account_recycler()
-
-            if cycle % 40 != 0:
-                cycle += 1
-                time.sleep(self.manager_sleep)
-                continue
-            else:
-                cycle = 1
+            if cycle % 4 == 0:
+                self.account_keeper(notice=(cycle % 40 == 0))
+                self.account_recycler()
 
             # Run once every 10 min.
-            self.account_monitor()
+            if cycle % 40 != 0:
+                self.account_monitor()
+                cycle = 0
+
             time.sleep(self.manager_sleep)
 
     def captcha_manager(self):
