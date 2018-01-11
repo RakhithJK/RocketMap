@@ -34,7 +34,7 @@ from .customLog import printPokemon
 from .account import (AccountBanned, check_login, setup_api,
                       pokestop_spinnable, spin_pokestop)
 from .proxy import get_new_proxy
-from .apiRequests import encounter
+from .apiRequests import encounter, get_map_objects as gmo
 
 log = logging.getLogger(__name__)
 
@@ -2586,11 +2586,6 @@ def encounter_pokemon(args, account_manager, status, api, account, pokemon):
                 if not args.no_api_store:
                     hlvl_account['api'] = hlvl_api
 
-            # Update account information.
-            hlvl_account['latitude'] = scan_location[0]
-            hlvl_account['longitude'] = scan_location[1]
-            hlvl_account['last_scan'] = datetime.utcnow()
-
         # If the already existent API is using a proxy but
         # it's not alive anymore, we need to get a new proxy.
         if (check_proxy and
@@ -2624,6 +2619,19 @@ def encounter_pokemon(args, account_manager, status, api, account, pokemon):
                         hlvl_username, hlvl_account['level'])
             account_manager.failed_account(hlvl_account, 'not high-level')
             return False
+
+        # Make a GMO request before the encounter.
+        if using_db_account:
+            response = gmo(hlvl_api, hlvl_account, scan_location)
+            if not response:
+                log.error('Account %s failed to get map objects before ' +
+                          'starting the encounter.', hlvl_account['username'])
+                account_manager.failed_account(hlvl_account, 'exception')
+                return False
+            # Update account information.
+            hlvl_account['latitude'] = scan_location[0]
+            hlvl_account['longitude'] = scan_location[1]
+            hlvl_account['last_scan'] = datetime.utcnow()
 
         attempts = 0
         enc_status = 0
