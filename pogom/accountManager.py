@@ -361,7 +361,7 @@ class AccountManager(object):
                   rows)
 
     # Load accounts from the database.
-    def load_accounts(self, count, reuse=False, hlvl=False):
+    def _load_accounts(self, count, reuse=False, hlvl=False):
         conditions = ((Account.allocated == 0) &
                       (Account.fail == 0) &
                       (Account.banned == AccountBanned.Clear))
@@ -395,7 +395,7 @@ class AccountManager(object):
         return accounts
 
     # Flag accounts that are going to be used by this instance.
-    def allocate_accounts(self, accounts):
+    def _allocate_accounts(self, accounts):
         step = 250
 
         if len(accounts) > 0:
@@ -417,28 +417,28 @@ class AccountManager(object):
         return True
 
     # Load and allocate accounts from the database.
-    # TODO: remove try .. except
     def fetch_accounts(self, count, reuse, hlvl):
         accounts = {}
         try:
             with Account.database().atomic():
-                accounts = self.load_accounts(count, reuse, hlvl)
-                if not self.allocate_accounts(accounts):
+                accounts = self._load_accounts(count, reuse, hlvl)
+                if not self._allocate_accounts(accounts):
                     return 0
         except Exception as e:
-            log.exception(e)
+            log.exception('Unable to fetch accounts from the database: %s', e)
 
         # Populate respective account pool.
-        if hlvl:
-            for username, account in accounts.iteritems():
-                account['allocated'] = True
-                account['instance_id'] = self.instance_id
-                self.accounts['hlvl'][username] = account
-        else:
-            for username, account in accounts.iteritems():
-                account['allocated'] = True
-                account['instance_id'] = self.instance_id
-                self.accounts['scan'][username] = account
+        with self.accounts_lock:
+            if hlvl:
+                for username, account in accounts.iteritems():
+                    account['allocated'] = True
+                    account['instance_id'] = self.instance_id
+                    self.accounts['hlvl'][username] = account
+            else:
+                for username, account in accounts.iteritems():
+                    account['allocated'] = True
+                    account['instance_id'] = self.instance_id
+                    self.accounts['scan'][username] = account
         return len(accounts)
 
     def replenish_accounts(self, count, hlvl=False):
@@ -447,14 +447,11 @@ class AccountManager(object):
         else:
             log.debug('Fetching %d scanner accounts.', count)
         fetch_count = 0
-        with self.accounts_lock:
-            if count > 0:
-                fetch_count = self.fetch_accounts(
-                    count, reuse=True, hlvl=hlvl)
-                count -= fetch_count
-            if count > 0:
-                fetch_count += self.fetch_accounts(
-                    count, reuse=False, hlvl=hlvl)
+        if count > 0:
+            fetch_count = self.fetch_accounts(count, reuse=True, hlvl=hlvl)
+            count -= fetch_count
+        if count > 0:
+            fetch_count += self.fetch_accounts(count, reuse=False, hlvl=hlvl)
 
         return fetch_count
 
@@ -464,11 +461,11 @@ class AccountManager(object):
 
         with self.accounts_lock:
             if self.accounts['active_hlvl'].pop(username, None):
-                if self.args.hlvl_workers > 0:
-                    self.accounts['hlvl'][username] = account
-                else:
+                if not self.args.hlvl_workers:
                     # Mark the account available to be used elsewhere.
                     account['allocated'] = False
+                else:
+                    self.accounts['hlvl'][username] = account
             elif self.accounts['active_scan'].pop(username, None):
                 self.accounts['scan'][username] = account
             else:

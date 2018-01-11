@@ -21,6 +21,7 @@ from playhouse.migrate import migrate, MySQLMigrator
 from datetime import datetime, timedelta
 from cachetools import TTLCache
 from cachetools import cached
+from random import uniform
 from timeit import default_timer
 
 from .utils import (distance, get_pokemon_name, get_pokemon_types,
@@ -2410,8 +2411,15 @@ def encounter_pokemon(args, account_manager, status, api, account, pokemon):
             hlvl_api = api
         else:
             using_db_account = True
-            # Get account to use for IV and CP scanning.
-            hlvl_account = account_manager.get_account(scan_location, True)
+            attempts = 0
+            while attempts < args.encounter_retries:
+                attempts += 1
+                # Get account to use for IV and CP scanning.
+                hlvl_account = account_manager.get_account(scan_location, True)
+                if not hlvl_account:
+                    log.info('Unable to allocate high-level account, waiting '
+                             + '%d seconds before retrying.', attempts + 1)
+                    time.sleep(attempts + 1)
 
         time.sleep(args.encounter_delay)
 
@@ -2422,9 +2430,9 @@ def encounter_pokemon(args, account_manager, status, api, account, pokemon):
             return False
 
         # Logging.
+        hlvl_username = hlvl_account['username']
         log.info('Encountering Pokemon ID %s with account %s at %s, %s.',
-                 pokemon_id, hlvl_account['username'], scan_location[0],
-                 scan_location[1])
+                 pokemon_id, hlvl_username, scan_location[0], scan_location[1])
 
         # If not args.no_api_store is enabled, we need to
         # re-use an old API object if it's stored and we're
@@ -2470,7 +2478,7 @@ def encounter_pokemon(args, account_manager, status, api, account, pokemon):
         if hlvl_account['level'] < 30:
             log.warning('Expected account of level 30 or higher, ' +
                         'but account %s is only level %d',
-                        hlvl_account['username'], hlvl_account['level'])
+                        hlvl_username, hlvl_account['level'])
             account_manager.failed_account(hlvl_account, 'not hlvl')
             return False
 
@@ -2480,45 +2488,58 @@ def encounter_pokemon(args, account_manager, status, api, account, pokemon):
             hlvl_account['longitude'] = scan_location[1]
             hlvl_account['last_scan'] = datetime.utcnow()
 
-        # Encounter Pokémon.
-        encounter_result = encounter(
-            hlvl_api, hlvl_account, pokemon.encounter_id,
-            pokemon.spawn_point_id, scan_location)
+        attempts = 0
+        while attempts < args.encounter_retries:
+            attempts += 1
+            # Encounter Pokémon.
+            encounter_result = encounter(
+                hlvl_api, hlvl_account, pokemon.encounter_id,
+                pokemon.spawn_point_id, scan_location)
 
-        # Handle errors.
-        if encounter_result:
-            enc_responses = encounter_result['responses']
-            # Check for reCaptcha.
-            if 'CHECK_CHALLENGE' in enc_responses:
-                captcha_url = enc_responses['CHECK_CHALLENGE'].challenge_url
-                if len(captcha_url) > 1:
-                    if not account_manager.uncaptcha_account(
-                            hlvl_account, status, hlvl_api, captcha_url):
-                        return False
+            # Handle errors.
+            if encounter_result:
+                responses = encounter_result['responses']
+                # Check for reCaptcha.
+                if 'CHECK_CHALLENGE' in responses:
+                    captcha_url = responses['CHECK_CHALLENGE'].challenge_url
+                    if len(captcha_url) > 1:
+                        if not account_manager.uncaptcha_account(
+                                hlvl_account, status, hlvl_api, captcha_url):
+                            return False
 
-            if ('ENCOUNTER' in enc_responses and
-                    enc_responses['ENCOUNTER'].status != 1):
-                log.error('There was an error encountering Pokemon ID %s with '
-                          + 'account %s: %d.', pokemon_id,
-                          hlvl_account['username'],
-                          enc_responses['ENCOUNTER'].status)
-            else:
-                pokemon_info = enc_responses[
-                    'ENCOUNTER'].wild_pokemon.pokemon_data
-                # Logging: let the user know we succeeded.
-                log.info('Encounter for Pokemon ID %s at %s, %s ' +
-                         'successful: %s/%s/%s, %s CP.', pokemon_id,
-                         pokemon.latitude, pokemon.longitude,
-                         pokemon_info.individual_attack,
-                         pokemon_info.individual_defense,
-                         pokemon_info.individual_stamina, pokemon_info.cp)
+                # Verify if encounter request was successful.
+                if 'ENCOUNTER' not in responses:
+                    log.error('Account %s failed encounter on Pokemon ID %s.',
+                              hlvl_username, pokemon_id)
+                    time.sleep(uniform(2.0, 4.0))
+                    continue
 
-                result = pokemon_info
+                # Validate encounter status.
+                enc_status = responses['ENCOUNTER'].status
+                if enc_status == 1:
+                    pokemon_info = responses[
+                        'ENCOUNTER'].wild_pokemon.pokemon_data
+                    # Logging: let the user know we succeeded.
+                    log.info('Successfuly encountered Pokemon ID %s at ' +
+                             '%s, %s on attempt #%d: %s CP, %s/%s/%s IVs.',
+                             pokemon_id, pokemon.latitude, pokemon.longitude,
+                             attempts, pokemon_info.cp,
+                             pokemon_info.individual_attack,
+                             pokemon_info.individual_defense,
+                             pokemon_info.individual_stamina)
+
+                    result = pokemon_info
+                    break
+                else:
+                    enc_delay = args.encounter_delay + uniform(1.0, 3.0)
+                    log.error('Account %s failed encounter on Pokemon ID %s ' +
+                              'with code: %d. Retrying in %.1f seconds.',
+                              hlvl_username, pokemon_id, enc_status, enc_delay)
+                    time.sleep()
 
     except Exception as e:
         log.exception('There was an exception encountering Pokemon ID %s ' +
-                      'with account %s: %s.',
-                      pokemon_id, hlvl_account['username'], e)
+                      'with account %s: %s.', pokemon_id, hlvl_username, e)
         # Signal account manager that this account has failed.
         if using_db_account:
             account_manager.failed_account(hlvl_account, 'exception')

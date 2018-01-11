@@ -163,6 +163,9 @@ def get_args():
                         help=('Time delay between encounter pokemon ' +
                               'in scan threads.'),
                         type=float, default=1)
+    parser.add_argument('-er', '--encounter-retries',
+                        help='Number of attempts to retry a failed encounter.',
+                        type=int, default=5)
     parser.add_argument('-ignf', '--ignorelist-file',
                         default='', help='File containing a list of ' +
                         'Pokemon IDs to ignore, one line per ID. ' +
