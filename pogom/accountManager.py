@@ -257,7 +257,7 @@ class AccountManager(object):
 
             if 'exception' in reason:
                 rest_interval = rest_interval * 0.1
-            elif 'banned' in reason:
+            elif account['banned'] != AccountBanned.Clear:
                 rest_interval = rest_interval * 10
 
             hold_time = (account['last_modified'] +
@@ -362,9 +362,12 @@ class AccountManager(object):
 
     # Load accounts from the database.
     def _load_accounts(self, count, reuse=False, hlvl=False):
-        conditions = ((Account.allocated == 0) &
-                      (Account.fail == 0) &
-                      (Account.banned == AccountBanned.Clear))
+        conditions = ((Account.allocated == 0) & (Account.fail == 0))
+
+        if self.args.no_pokemon or self.args.shadow_ban_scan:
+            conditions &= (Account.banned <= AccountBanned.Shadowban)
+        else:
+            conditions &= (Account.banned == AccountBanned.Clear)
         if reuse:
             conditions &= (Account.instance_id == self.instance_id)
         else:
@@ -521,9 +524,15 @@ class AccountManager(object):
 
         return picked_account
 
-    # Update account information in the database.
-    def update_account(self, account):
+    # Check account status and update the database.
+    def refresh_account(self, account):
+        # Check if account is shadow banned.
+        if (not self.args.shadow_ban_scan and
+                account['banned'] == AccountBanned.Shadowban):
+            return False
+
         self.dbq.put((Account, {0: Account.db_format(account)}))
+        return True
 
     # Remove account from rotation.
     def remove_account(self, account):
@@ -684,10 +693,14 @@ class AccountManager(object):
         # Remove account from rotation.
         if not self.remove_account(account):
             log.error('Account %s not found in account pool.', username)
-            return False
+            return
 
-        if account['banned']:
-            reason = 'banned'
+        if account['banned'] == AccountBanned.Shadowban:
+            reason = 'Shadow banned.'
+        if account['banned'] == AccountBanned.Temporary:
+            reason = 'Temporary ban.'
+        if account['banned'] == AccountBanned.Permanent:
+            reason = 'Permanent ban.'
         self.accounts['failed'].append((account, reason, False))
 
 

@@ -166,6 +166,21 @@ def get_args():
     parser.add_argument('-er', '--encounter-retries',
                         help='Number of attempts to retry a failed encounter.',
                         type=int, default=5)
+    parser.add_argument('-sbs', '--shadow-ban-scan',
+                        help='Allow shadow banned accounts to keep scanning.',
+                        action='store_true', default=False)
+    common_list = parser.add_mutually_exclusive_group()
+    common_list.add_argument('-cpl', '--common-pokemon-list',
+                             default=[16, 19, 23, 27, 29, 32, 41, 43, 46,
+                                      52, 54, 60, 69, 72, 74, 77, 81, 98,
+                                      118, 120, 129, 161, 165, 167, 177,
+                                      183, 187, 191, 194, 198, 209, 218],
+                             help=('List of Pokemon IDs considered common. ' +
+                                   'Used to detect shadow banned accounts.'))
+    common_list.add_argument('-cplf', '--common-pokemon-list-file', default='',
+                             help=('File containing a list of Pokemon IDs ' +
+                                   'considered common. Used to detect ' +
+                                   'shadow banned accounts.'))
     parser.add_argument('-ignf', '--ignorelist-file',
                         default='', help='File containing a list of ' +
                         'Pokemon IDs to ignore, one line per ID. ' +
@@ -626,6 +641,15 @@ def get_args():
         if args.ignorelist_file:
             with open(args.ignorelist_file) as f:
                 args.ignorelist = frozenset([int(l.strip()) for l in f])
+
+        # Common Pokemon list - used to detect shadow banned accounts.
+        if args.common_pokemon_list_file:
+            with open(args.common_pokemon_list_file) as f:
+                args.common_pokemon_list = frozenset(
+                    [int(l.strip()) for l in f])
+        else:
+            args.common_pokemon_list = frozenset(
+                [int(i) for i in args.common_pokemon_list])
 
         # Decide which scanning mode to use.
         if args.spawnpoint_scanning:

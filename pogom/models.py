@@ -367,6 +367,30 @@ class Pokemon(LatLongModel):
 
         return list(itertools.chain(*query))
 
+    @staticmethod
+    def get_nearby_pokemon_ids(location, timestamp):
+        # Pokemon are visible up to 200 meters.
+        n, e, s, w = hex_bounds(location, radius=0.200)
+
+        # Get active Pokemon inside box of visible distance.
+        query = (Pokemon
+                 .select(Pokemon.latitude.alias('lat'),
+                         Pokemon.longitude.alias('lng'),
+                         Pokemon.pokemon_id)
+                 .where((Pokemon.disappear_time >= timestamp) &
+                        (Pokemon.latitude <= n) &
+                        (Pokemon.latitude >= s) &
+                        (Pokemon.longitude >= w) &
+                        (Pokemon.longitude <= e))
+                 .dicts())
+
+        pokemon_ids = set()
+        for p in query:
+            if in_radius(location, (p['lat'], p['lng']), 200):
+                pokemon_ids.add(p['pokemon_id'])
+
+        return pokemon_ids
+
 
 class Pokestop(LatLongModel):
     pokestop_id = Utf8mb4CharField(primary_key=True, max_length=50)
@@ -1888,6 +1912,7 @@ def parse_map(args, map_dict, scan_coords, scan_location, db_update_queue,
     wild_pokemon = []
     wild_pokemon_count = 0
     nearby_pokemon = 0
+    nearby_pokemon_ids = set()
     spawn_points = {}
     scan_spawn_points = {}
     sightings = {}
@@ -1915,6 +1940,8 @@ def parse_map(args, map_dict, scan_coords, scan_location, db_update_queue,
         # if a scan was actually bad.
         if not args.no_pokemon:
             wild_pokemon += cell.wild_pokemons
+            for p in cell.nearby_pokemons:
+                nearby_pokemon_ids.add(p.pokemon_id)
 
         if not args.no_pokestops or not args.no_gyms:
             forts += cell.forts
@@ -1964,6 +1991,7 @@ def parse_map(args, map_dict, scan_coords, scan_location, db_update_queue,
                 (p['encounter_id'], p['spawnpoint_id']) for p in query]
 
         for p in wild_pokemon:
+            nearby_pokemon_ids.add(p.pokemon_data.pokemon_id)
             spawn_id = int(p.spawn_point_id, 16)
             sp = SpawnPoint.get_by_id(spawn_id, p.latitude,
                                       p.longitude)
@@ -2311,6 +2339,31 @@ def parse_map(args, map_dict, scan_coords, scan_location, db_update_queue,
 
         # Helping out the GC.
         del forts
+
+    # Check nearby Pokemon to validate if account is shadow banned.
+    if nearby_pokemon_ids:
+        # Remove common Pokemon from nearby list.
+        rare_finds = [p for p in nearby_pokemon_ids
+                      if p not in args.common_pokemon_list]
+
+        # Check if last scan had any rare Pokemon.
+        if not rare_finds:
+            status['nonrares'] += 1
+
+            if status['nonrares'] > 20:
+                account['banned'] = AccountBanned.Shadowban
+            elif status['nonrares'] > 3:
+                # Get nearby active Pokemon IDs from database.
+                active_pokemon_ids = Pokemon.get_nearby_pokemon_ids(
+                    scan_coords, now_date + timedelta(seconds=10))
+
+                for p_id in active_pokemon_ids:
+                    if (p_id not in nearby_pokemon_ids and
+                            p_id not in args.common_pokemon_list):
+                        account['banned'] = AccountBanned.Shadowban
+        else:
+            # Reset status counter if rare Pokemon are present.
+            status['nonrares'] = 0
 
     log.info('Parsing found Pokemon: %d (%d filtered), nearby: %d, ' +
              'pokestops: %d, gyms: %d, raids: %d.',
