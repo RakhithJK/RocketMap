@@ -696,11 +696,11 @@ class AccountManager(object):
             return
 
         if account['banned'] == AccountBanned.Shadowban:
-            reason = 'Shadow banned.'
+            reason = 'Shadow banned'
         if account['banned'] == AccountBanned.Temporary:
-            reason = 'Temporary ban.'
+            reason = 'Temporary ban'
         if account['banned'] == AccountBanned.Permanent:
-            reason = 'Permanent ban.'
+            reason = 'Permanent ban'
         self.accounts['failed'].append((account, reason, False))
 
 
