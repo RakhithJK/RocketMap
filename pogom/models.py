@@ -1209,6 +1209,7 @@ class WorkerStatus(LatLongModel):
     no_items = IntegerField()
     skip = IntegerField()
     captcha = IntegerField()
+    norares = IntegerField()
     last_modified = DateTimeField(index=True)
     message = Utf8mb4CharField(max_length=191)
     last_scan_date = DateTimeField(index=True)
@@ -1224,6 +1225,7 @@ class WorkerStatus(LatLongModel):
                 'no_items': status['noitems'],
                 'skip': status['skip'],
                 'captcha': status['captcha'],
+                'norares': status['norares'],
                 'last_modified': datetime.utcnow(),
                 'message': status['message'],
                 'last_scan_date': status.get('last_scan_date',
@@ -2487,6 +2489,8 @@ def encounter_pokemon(args, account_manager, status, api, account, pokemon):
                     log.info('Unable to allocate high-level account, waiting '
                              + '%d seconds before retrying.', attempts + 1)
                     time.sleep(attempts + 1)
+                else:
+                    break
 
         time.sleep(args.encounter_delay)
 

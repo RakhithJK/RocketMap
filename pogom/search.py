@@ -82,6 +82,7 @@ def switch_status_printer(display_type, current_page, mainlog,
                 display_type[0] = 'workers'
         elif command.isdigit():
             current_page[0] = int(command)
+        elif command.lower() == 'w':
             mainlog.handlers[0].setLevel(logging.CRITICAL)
             display_type[0] = 'workers'
         elif command.lower() == 'f':
@@ -120,22 +121,19 @@ def status_printer(threadStatus, account_manager, logmode, hash_key,
             # In log display mode, we don't want to show anything.
             continue
 
+        # Get the terminal size.
+        width, height = terminalsize.get_terminal_size()
+        # Available lines to print item list.
+        usable_height = height - 6
+        # Prevent division by zero.
+        if usable_height < 1:
+            usable_height = 1
+
         # Create a list to hold all the status lines, so they can be printed
         # all at once to reduce flicker.
         status_text = []
 
         if display_type[0] == 'workers':
-
-            # Get the terminal size.
-            width, height = terminalsize.get_terminal_size()
-            # Queue and overseer take 2 lines.  Switch message takes up 2
-            # lines.  Remove an extra 2 for things like screen status lines.
-            usable_height = height - 6
-            # Prevent people running terminals only 6 lines high from getting a
-            # divide by zero.
-            if usable_height < 1:
-                usable_height = 1
-
             # Print status of overseer.
             status_text.append('{} Overseer: {}'.format(
                 threadStatus['Overseer']['scheduler'],
@@ -219,7 +217,28 @@ def status_printer(threadStatus, account_manager, logmode, hash_key,
             status = '{:' + str(userlen) + '} | {:10} | {:20}'
             status_text.append(status.format('User', 'Hold Time', 'Reason'))
 
+            total_pages = math.ceil(len(account_list) / float(usable_height))
+
+            # Prevent moving outside the valid range of pages.
+            if current_page[0] > total_pages:
+                current_page[0] = total_pages
+            if current_page[0] < 1:
+                current_page[0] = 1
+
+            # Calculate which lines to print (1-based).
+            start_line = usable_height * (current_page[0] - 1) + 1
+            end_line = start_line + usable_height - 1
+
+            # Print account statistics.
+            current_line = 0
             for account, reason, notice in account_list:
+                # Skip over items that don't belong on this page.
+                current_line += 1
+                if current_line < start_line:
+                    continue
+                if current_line > end_line:
+                    break
+
                 status_text.append(status.format(
                     account['username'],
                     account['last_modified'].strftime('%H:%M:%S'),
@@ -251,10 +270,10 @@ def status_printer(threadStatus, account_manager, logmode, hash_key,
 
         # Print the status_text for the current screen.
         status_text.append((
-            'Page {}/{}. Page number to switch pages. F to show on hold ' +
-            'accounts. H to show hash status. <ENTER> alone to switch ' +
-            'between status and log view').format(current_page[0],
-                                                  total_pages))
+            'Page {}/{}. Page number to switch pages. W to show workers. ' +
+            'F to show accounts on hold. H to show hash status. ' +
+            '<ENTER> alone to switch between status and log view.').format(
+                current_page[0], total_pages))
         # Clear the screen.
         os.system('cls' if os.name == 'nt' else 'clear')
         # Print status.
@@ -571,13 +590,16 @@ def get_stats_message(threadStatus, search_items_queue_array, db_updates_queue,
         search_items_queue_size += search_items_queue_array[i].qsize()
 
     message = (
-        'Queues: {} search items, {} db updates, {} webhook.  ' +
-        'Spare accounts available: {}. Accounts on hold: {}. ' +
-        'Accounts with captcha: {}\n'
+        'Queues: {} search items, {} db updates, {} webhook. ' +
+        'Scanner accounts: {}/{} active. High-level accounts: {}/{} active. ' +
+        'Accounts on hold: {}. Accounts with captcha: {}\n'
     ).format(search_items_queue_size,
              db_updates_queue.qsize(),
              wh_queue.qsize(),
              len(account_manager.accounts['scan']),
+             len(account_manager.accounts['active_scan']),
+             len(account_manager.accounts['hlvl']),
+             len(account_manager.accounts['active_hlvl']),
              len(account_manager.accounts['failed']),
              len(account_manager.accounts['captcha']))
 

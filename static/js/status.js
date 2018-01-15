@@ -63,7 +63,7 @@ function addMainWorker(hash) {
 }
 
 function processMainWorker(i, worker) {
-    var hash = hashFnv32a(worker['worker_name'], true)
+    var hash = hashFnv32a(worker['instance_id'], true)
 
     if ($('#worker_' + hash).length === 0) {
         addMainWorker(hash)
@@ -84,6 +84,7 @@ function addWorker(mainWorkerHash, workerHash) {
        <div id="no_items_${workerHash}"  class="status_cell"/>
        <div id="skip_${workerHash}"     class="status_cell"/>
        <div id="captchas_${workerHash}" class="status_cell"/>
+       <div id="norares_${workerHash}" class="status_cell"/>
        <div id="lastmod_${workerHash}"  class="status_cell"/>
        <div id="message_${workerHash}"  class="status_cell"/>
      </div>
@@ -110,7 +111,7 @@ function processWorker(i, worker) {
     const hash = hashFnv32a(worker['username'], true)
     var mainWorkerHash
     if (showWorkers && showInstances) {
-        mainWorkerHash = hashFnv32a(worker['worker_name'], true)
+        mainWorkerHash = hashFnv32a(worker['instance_id'], true)
         if ($('#table_' + mainWorkerHash).length === 0) {
             return
         }
@@ -133,6 +134,7 @@ function processWorker(i, worker) {
     $('#no_items_' + hash).html(worker['no_items'])
     $('#skip_' + hash).html(worker['skip'])
     $('#captchas_' + hash).html(worker['captcha'])
+    $('#norares_' + hash).html(worker['norares'])
     $('#lastmod_' + hash).html(lastModified)
     $('#message_' + hash).html(worker['message'])
 }
@@ -271,6 +273,9 @@ function addTable(hash) {
          </div>
          <div class="status_cell">
            Captchas
+         </div>
+         <div class="status_cell">
+           No Rares
          </div>
          <div class="status_cell">
            Last Modified
