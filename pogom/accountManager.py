@@ -44,20 +44,16 @@ class AccountManager(object):
 
         self.accounts_lock = Lock()
 
-        self.release_instance()
-        self.account_keeper(notice=True)
-
-        # Start account manager thread.
-        log.info('Starting account manager thread...')
-        self.manager = Thread(target=self.run_manager,
-                              name='account-manager')
-        self.manager.daemon = True
-        self.manager.start()
-
     def run_manager(self):
+        # Release allocated accounts previously used by this instance.
+        self.release_instance()
+        # Load required accounts to start working.
+        self.account_keeper(notice=True)
+        # Captcha solver current thread ID.
         self.thread_id = 0
+
         cycle = 0
-        time.sleep(60)
+        time.sleep(10)
         while True:
             self.manager_sleep = 15
             cycle += 1
@@ -72,7 +68,7 @@ class AccountManager(object):
                 self.account_recycler()
 
             # Run once every 10 min.
-            if cycle % 40 != 0:
+            if cycle % 40 == 0:
                 self.account_monitor()
                 cycle = 0
 
@@ -113,7 +109,7 @@ class AccountManager(object):
                 for i in range(0, tokens_remaining):
                     account = self.accounts['captcha'][0][1]
                     hold_time = (datetime.utcnow() -
-                                 account['last_scan']).total_seconds()
+                                 account['last_modified']).total_seconds()
                     if hold_time > self.args.manual_captcha_timeout:
                         log.debug('Account %s waited %ds for captcha token ' +
                                   'and reached the %ds timeout.',
@@ -226,21 +222,24 @@ class AccountManager(object):
         time.sleep(1)
 
     def account_keeper(self, notice=False):
-        # Check for missing scanning accounts.
         scan_count = (len(self.accounts['scan']) +
                       len(self.accounts['active_scan']))
+        hlvl_count = (len(self.accounts['hlvl']) +
+                      len(self.accounts['active_hlvl']))
+        log.debug('Account keeper running. Scanner: %d. High-level: %d',
+                  scan_count, hlvl_count)
+
+        # Check for missing scanner accounts.
         scan_missing = self.args.workers - scan_count
         scan_fetched = self.replenish_accounts(scan_missing, hlvl=False)
         if notice and scan_fetched < scan_missing:
-            log.error('Insufficient scanner accounts in the database.')
+            log.warning('Insufficient scanner accounts in the database.')
 
         # Check for missing high-level accounts.
-        hlvl_count = (len(self.accounts['hlvl']) +
-                      len(self.accounts['active_hlvl']))
         hlvl_missing = self.args.hlvl_workers - hlvl_count
         hlvl_fetched = self.replenish_accounts(hlvl_missing, hlvl=True)
         if notice and hlvl_fetched < hlvl_missing:
-            log.error('Insufficient high-level accounts in the database.')
+            log.warning('Insufficient high-level accounts in the database.')
 
     def account_recycler(self):
         now = datetime.utcnow()
@@ -389,11 +388,9 @@ class AccountManager(object):
         if hlvl:
             for dba in query:
                 accounts[dba['username']] = dba
-            log.debug('Loaded %d high level accounts.', len(query))
         else:
             for dba in query:
                 accounts[dba['username']] = dba
-            log.debug('Loaded %d accounts.', len(query))
 
         return accounts
 
@@ -431,24 +428,26 @@ class AccountManager(object):
             log.exception('Unable to fetch accounts from the database: %s', e)
 
         # Populate respective account pool.
+        if hlvl:
+            account_pool = self.accounts['hlvl']
+        else:
+            account_pool = self.accounts['scan']
+
         with self.accounts_lock:
-            if hlvl:
-                for username, account in accounts.iteritems():
-                    account['allocated'] = True
-                    account['instance_id'] = self.instance_id
-                    self.accounts['hlvl'][username] = account
-            else:
-                for username, account in accounts.iteritems():
-                    account['allocated'] = True
-                    account['instance_id'] = self.instance_id
-                    self.accounts['scan'][username] = account
+            for username, account in accounts.iteritems():
+                account['allocated'] = True
+                account['instance_id'] = self.instance_id
+                account_pool[username] = account
+
         return len(accounts)
 
     def replenish_accounts(self, count, hlvl=False):
         if hlvl:
-            log.debug('Fetching %d high-level accounts.', count)
+            account_type = 'high-level'
         else:
-            log.debug('Fetching %d scanner accounts.', count)
+            account_type = 'scanner'
+
+        log.debug('Fetching %d %s accounts.', count, account_type)
         fetch_count = 0
         if count > 0:
             fetch_count = self.fetch_accounts(count, reuse=True, hlvl=hlvl)
@@ -456,6 +455,7 @@ class AccountManager(object):
         if count > 0:
             fetch_count += self.fetch_accounts(count, reuse=False, hlvl=hlvl)
 
+        log.debug('Loaded %d %s accounts.', fetch_count, account_type)
         return fetch_count
 
     # Release an account back to the pool after it was used.

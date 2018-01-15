@@ -382,7 +382,7 @@ def search_overseer_thread(args, account_manager, new_location_queue,
             'noitems': 0,
             'skip': 0,
             'captcha': 0,
-            'nonrares': 0,
+            'norares': 0,
             'username': '',
             'proxy_display': proxy_display,
             'proxy_url': proxy_url,
@@ -757,7 +757,7 @@ def search_worker_thread(args, account_manager, control_flags, status,
                 'noitems': 0,
                 'skip': 0,
                 'captcha': 0,
-                'nonrares': 0,
+                'norares': 0,
                 'active': True,
                 'message':
                     'Switching to account {}.'.format(account['username'])
@@ -1137,7 +1137,7 @@ def search_worker_thread(args, account_manager, control_flags, status,
                 if not account_manager.refresh_account(account):
                     status['message'] = (
                         'Account {} is shadow banned: {} scans without ' +
-                        'rare Pokemon! Switching accounts...').format(
+                        'rare Pokemon. Switching accounts...').format(
                             account['username'], status['nonrares'])
                     log.warning(status['message'])
                     account_manager.failed_account(account, 'shadowban')

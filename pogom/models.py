@@ -2348,11 +2348,11 @@ def parse_map(args, map_dict, scan_coords, scan_location, db_update_queue,
 
         # Check if last scan had any rare Pokemon.
         if not rare_finds:
-            status['nonrares'] += 1
+            status['norares'] += 1
 
-            if status['nonrares'] > 20:
+            if status['norares'] > 20:
                 account['banned'] = AccountBanned.Shadowban
-            elif status['nonrares'] > 3:
+            elif status['norares'] > 3:
                 # Get nearby active Pokemon IDs from database.
                 active_pokemon_ids = Pokemon.get_nearby_pokemon_ids(
                     scan_coords, now_date + timedelta(seconds=10))
@@ -2363,7 +2363,7 @@ def parse_map(args, map_dict, scan_coords, scan_location, db_update_queue,
                         account['banned'] = AccountBanned.Shadowban
         else:
             # Reset status counter if rare Pokemon are present.
-            status['nonrares'] = 0
+            status['norares'] = 0
 
     log.info('Parsing found Pokemon: %d (%d filtered), nearby: %d, ' +
              'pokestops: %d, gyms: %d, raids: %d.',

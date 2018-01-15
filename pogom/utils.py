@@ -170,7 +170,7 @@ def get_args():
                         help='Allow shadow banned accounts to keep scanning.',
                         action='store_true', default=False)
     common_list = parser.add_mutually_exclusive_group()
-    common_list.add_argument('-cpl', '--common-pokemon-list',
+    common_list.add_argument('-cpl', '--common-pokemon-list', action='append',
                              default=[16, 19, 23, 27, 29, 32, 41, 43, 46,
                                       52, 54, 60, 69, 72, 74, 77, 81, 98,
                                       118, 120, 129, 161, 165, 167, 177,

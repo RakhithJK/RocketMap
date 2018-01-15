@@ -421,24 +421,28 @@ def main():
             t.daemon = True
             t.start()
 
-    # Create account manager.
     if not args.only_server:
+        # Check if we are able to scan.
+        if not can_start_scanning(args):
+            sys.exit(1)
+
+        # Create account manager.
         account_manager = AccountManager(
             args, db_updates_queue, wh_updates_queue)
 
-    # Clear all accounts from the database.
-    if args.clear_db_accounts:
-        account_manager.clear_all()
+        # Clear all accounts from the database.
+        if args.clear_db_accounts:
+            account_manager.clear_all()
 
-    # Parse accounts from CSV file into the database.
-    if args.accounts_csv:
-        accounts = parse_accounts_csv(args.accounts_csv)
-        if not accounts:
-            log.critical('Found some errors in accounts CSV file: %s',
-                         args.accounts_csv)
-            sys.exit(1)
-        else:
-            account_manager.insert_new(accounts.values())
+        # Parse accounts from CSV file into the database.
+        if args.accounts_csv:
+            accounts = parse_accounts_csv(args.accounts_csv)
+            if not accounts:
+                log.critical('Found some errors in accounts CSV file: %s',
+                             args.accounts_csv)
+                sys.exit(1)
+            else:
+                account_manager.insert_new(accounts.values())
 
     if not args.only_server:
         # Speed limit.
@@ -452,6 +456,12 @@ def main():
         # Check if we are able to scan.
         if not can_start_scanning(args):
             sys.exit(1)
+
+        # Start account manager thread.
+        log.info('Starting account manager thread...')
+        t = Thread(target=account_manager.run_manager, name='account-manager')
+        t.daemon = True
+        t.start()
 
         initialize_proxies(args)
 
