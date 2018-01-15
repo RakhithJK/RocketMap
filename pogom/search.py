@@ -270,6 +270,7 @@ def worker_status_db_thread(threads_status, name, db_updates_queue):
             if status['type'] == 'Overseer':
                 overseer = {
                     'worker_name': name,
+                    'instance_id': status['instance_id'],
                     'message': status['message'],
                     'method': status['scheduler'],
                     'last_modified': datetime.utcnow(),
@@ -285,8 +286,7 @@ def worker_status_db_thread(threads_status, name, db_updates_queue):
                     'elapsed': status['elapsed']
                 }
             elif status['type'] == 'Worker':
-                workers[status['username']] = WorkerStatus.db_format(
-                    status, name)
+                workers[status['username']] = WorkerStatus.db_format(status)
         if overseer is not None:
             db_updates_queue.put((MainWorker, {0: overseer}))
             db_updates_queue.put((WorkerStatus, workers))
@@ -312,6 +312,7 @@ def search_overseer_thread(args, account_manager, new_location_queue,
         gym_cache = TTLCache(maxsize=10000, ttl=60)
 
     threadStatus['Overseer'] = {
+        'instance_id': args.instance_id,
         'message': 'Initializing',
         'type': 'Overseer',
         'starttime': now(),
@@ -377,6 +378,7 @@ def search_overseer_thread(args, account_manager, new_location_queue,
 
         workerId = 'Worker {:03}'.format(i)
         threadStatus[workerId] = {
+            'instance_id': args.instance_id,
             'type': 'Worker',
             'message': 'Creating thread...',
             'success': 0,

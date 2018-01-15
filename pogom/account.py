@@ -118,8 +118,8 @@ def check_login(args, account, api, proxy_url):
             time.sleep(args.login_delay)
 
     if num_tries > args.login_retries:
-        log.error('Failed to login to Pokemon Go with account %s in %d tries.',
-                  account['username'], num_tries)
+        log.error('Failed %d times to login to Pokemon Go with account %s.',
+                  num_tries, account['username'])
         account['login_attempts'] = login_attempts + 1
         if account['login_attempts'] < 5:
             raise TooManyLoginAttempts('Exceeded login attempts.')
@@ -483,13 +483,11 @@ def complete_tutorial(args, api, account):
 
 def reset_account(account):
     account['start_time'] = time.time()
-    account['warning'] = None
     account['tutorials'] = []
     account['items'] = {}
     account['pokemons'] = {}
     account['incubators'] = []
     account['eggs'] = []
-    account['level'] = 0
     account['spins'] = 0
     account['session_spins'] = 0
     account['walked'] = 0.0

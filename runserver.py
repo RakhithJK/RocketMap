@@ -24,8 +24,9 @@ from pogom.utils import (get_args, now, gmaps_reverse_geolocate,
                          generate_instance_id, parse_accounts_csv)
 from pogom.altitude import get_gmaps_altitude
 
-from pogom.models import (PlayerLocale, init_database, clean_db_loop,
-                          create_tables, drop_tables, db_updater,
+from pogom.models import (MainWorker, PlayerLocale, init_database,
+                          clean_db_loop, create_tables, drop_tables,
+                          db_updater,
                           verify_table_encoding, verify_database_schema)
 from pogom.webhook import wh_updater
 
@@ -420,6 +421,12 @@ def main():
                        args=(args, wh_updates_queue, wh_key_cache))
             t.daemon = True
             t.start()
+
+    # Check MainWorker table to avoid running duplicate instances.
+    if MainWorker.get_by_instance(args.instance_id):
+        log.critical('Detected a duplicate instance launch with ID: %s',
+                     args.instance_id)
+        sys.exit(1)
 
     if not args.only_server:
         # Check if we are able to scan.

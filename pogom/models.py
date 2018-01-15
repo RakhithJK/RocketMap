@@ -108,10 +108,10 @@ class LatLongModel(BaseModel):
 # The account DB model provides methods for various tasks in relation to
 # account handling in RM.
 class Account(LatLongModel):
-    auth_service = CharField(max_length=5)
-    username = CharField(primary_key=True, max_length=64)
-    password = CharField(max_length=64)
-    instance_id = CharField(index=True, null=True, max_length=32)
+    auth_service = Utf8mb4CharField(max_length=5)
+    username = Utf8mb4CharField(primary_key=True, max_length=50)
+    password = Utf8mb4CharField(max_length=64)
+    instance_id = Utf8mb4CharField(index=True, null=True, max_length=32)
     allocated = BooleanField(index=True, default=False)
     latitude = DoubleField(null=True)
     longitude = DoubleField(null=True)
@@ -1134,6 +1134,7 @@ class ScannedLocation(LatLongModel):
 
 class MainWorker(BaseModel):
     worker_name = Utf8mb4CharField(primary_key=True, max_length=50)
+    instance_id = Utf8mb4CharField(index=True, max_length=32)
     message = TextField(null=True, default="")
     method = Utf8mb4CharField(max_length=50)
     last_modified = DateTimeField(index=True)
@@ -1185,10 +1186,24 @@ class MainWorker(BaseModel):
 
         return status
 
+    @staticmethod
+    def get_by_instance(instance_id, timeout=30):
+        with MainWorker.database().execution_context():
+            query = (MainWorker
+                     .select()
+                     .where((MainWorker.instance_id == args.instance_id) &
+                            (MainWorker.last_modified >
+                             (datetime.utcnow() - timedelta(seconds=timeout))))
+                     .dicts())
+            if len(query) > 0:
+                return query[0]
+
+        return False
+
 
 class WorkerStatus(LatLongModel):
     username = Utf8mb4CharField(primary_key=True, max_length=50)
-    worker_name = Utf8mb4CharField(index=True, max_length=50)
+    instance_id = Utf8mb4CharField(index=True, max_length=32)
     success = IntegerField()
     fail = IntegerField()
     no_items = IntegerField()
@@ -1201,10 +1216,9 @@ class WorkerStatus(LatLongModel):
     longitude = DoubleField(null=True)
 
     @staticmethod
-    def db_format(status, name='status_worker_db'):
-        status['worker_name'] = status.get('worker_name', name)
+    def db_format(status):
         return {'username': status['username'],
-                'worker_name': status['worker_name'],
+                'instance_id': status['instance_id'],
                 'success': status['success'],
                 'fail': status['fail'],
                 'no_items': status['noitems'],
