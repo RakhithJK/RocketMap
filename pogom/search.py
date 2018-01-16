@@ -280,7 +280,7 @@ def status_printer(threadStatus, account_manager, logmode, hash_key,
         print '\n'.join(status_text)
 
 
-def worker_status_db_thread(threads_status, name, db_updates_queue):
+def worker_status_db_thread(threads_status, db_updates_queue):
 
     while True:
         workers = {}
@@ -288,8 +288,8 @@ def worker_status_db_thread(threads_status, name, db_updates_queue):
         for status in threads_status.values():
             if status['type'] == 'Overseer':
                 overseer = {
-                    'worker_name': name,
                     'instance_id': status['instance_id'],
+                    'worker_name': status['worker_name'],
                     'message': status['message'],
                     'method': status['scheduler'],
                     'last_modified': datetime.utcnow(),
@@ -332,8 +332,9 @@ def search_overseer_thread(args, account_manager, new_location_queue,
 
     threadStatus['Overseer'] = {
         'instance_id': args.instance_id,
-        'message': 'Initializing',
+        'worker_name': args.status_name,
         'type': 'Overseer',
+        'message': 'Initializing',
         'starttime': now(),
         'accounts_captcha': 0,
         'accounts_failed': 0,
@@ -371,7 +372,7 @@ def search_overseer_thread(args, account_manager, new_location_queue,
         log.info('Starting status database thread...')
         t = Thread(target=worker_status_db_thread,
                    name='status_worker_db',
-                   args=(threadStatus, args.status_name, db_updates_queue))
+                   args=(threadStatus, db_updates_queue))
         t.daemon = True
         t.start()
 
@@ -772,10 +773,17 @@ def search_worker_thread(args, account_manager, control_flags, status,
                 status.update({
                     'username': account['username'],
                     'last_modified': account['last_modified'],
-                    'last_scan_date': datetime.utcnow(),
-                    'latitude': account['latitude'],
-                    'longitude': account['longitude']
+                    'last_scan_date': account['last_modified'],
+                    'latitude': None,
+                    'longitude': None
                 })
+                # Include information from last scan if available.
+                if account['last_scan']:
+                    status.update({
+                        'last_scan_date': account['last_scan'],
+                        'latitude': account['latitude'],
+                        'longitude': account['longitude']
+                    })
             # New lease of life right here.
             status.update({
                 'fail': 0,
@@ -816,10 +824,9 @@ def search_worker_thread(args, account_manager, control_flags, status,
                             account['username'],
                             args.max_failures)
                     log.warning(status['message'])
-                    account_manager.failed_account(account, 'failures')
+                    account_manager.failed_account(account, 'Failures')
 
-                    # Exit this loop to get a new account and have the API
-                    # recreated.
+                    # Exit this loop to get a new account and recreate API.
                     break
 
                 # If this account has not found anything for too long, let it
@@ -832,10 +839,9 @@ def search_worker_thread(args, account_manager, control_flags, status,
                         'accounts...').format(account['username'],
                                               args.max_empty)
                     log.warning(status['message'])
-                    account_manager.failed_account(account, 'empty scans')
+                    account_manager.failed_account(account, 'Empty scans')
 
-                    # Exit this loop to get a new account and have the API
-                    # recreated.
+                    # Exit this loop to get a new account and recreate API.
                     break
 
                 # If used proxy disappears from "live list" after background
@@ -849,21 +855,20 @@ def search_worker_thread(args, account_manager, control_flags, status,
                     log.warning(status['message'])
                     account_manager.release_account(account)
 
-                    # Exit this loop to get a new account and have the API
-                    # recreated.
+                    # Exit this loop to get a new account and recreate API.
                     break
 
                 # If this account has been running too long, let it rest.
-                if (args.account_search_interval is not None):
-                    if (status['starttime'] <=
-                            (now() - args.account_search_interval)):
-                        status['message'] = (
-                            'Account {} is being rotated out to rest.'.format(
-                                account['username']))
-                        log.info(status['message'])
-                        account_manager.failed_account(account, 'resting')
+                if (args.account_search_interval and status['starttime'] <=
+                        (now() - args.account_search_interval)):
+                    status['message'] = (
+                        'Account {} is being rotated out to rest.'.format(
+                            account['username']))
+                    log.info(status['message'])
+                    account_manager.failed_account(account, 'Resting')
 
-                        break
+                    # Exit this loop to get a new account and recreate API.
+                    break
 
                 # Grab the next thing to search (when available).
                 step, scan_coords, appears, leaves, messages, wait = (
@@ -969,26 +974,21 @@ def search_worker_thread(args, account_manager, control_flags, status,
                     time.sleep(scheduler.delay(status['last_scan_date']))
                     continue
 
-                # Got the response, check for captcha, parse it out, then send
-                # data updates to db/wh queues.
+                # Check for reCaptcha.
+                captcha = account_manager.handle_captcha(
+                    account, status, api, response_dict)
+                if captcha['found'] and captcha['failed']:
+                    # Exit this loop to get a new account and recreate API.
+                    time.sleep(3)
+                    break
+                elif captcha['found']:
+                    # Make another GMO request for the same location
+                    # since the previous one was captcha'd.
+                    scan_date = datetime.utcnow()
+                    response_dict = gmo(api, account, scan_coords)
+
+                # Parse GMO response and send data updates to db/wh queues.
                 try:
-                    # Check for reCaptcha.
-                    if 'CHECK_CHALLENGE' in response_dict['responses']:
-                        captcha_url = response_dict[
-                            'responses']['CHECK_CHALLENGE'].challenge_url
-                        if len(captcha_url) > 1:
-                            log.debug('Account encountered a reCaptcha.')
-
-                            if not account_manager.uncaptcha_account(
-                                    account, status, api, captcha_url):
-                                time.sleep(3)
-                                break
-                            else:
-                                # Make another request for the same location
-                                # since the previous one was captcha'd.
-                                scan_date = datetime.utcnow()
-                                response_dict = gmo(api, account, scan_coords)
-
                     parsed = parse_map(args, response_dict, scan_coords,
                                        scan_location, dbq, whq, api, status,
                                        scan_date, account, account_manager)
@@ -1159,15 +1159,10 @@ def search_worker_thread(args, account_manager, control_flags, status,
                               key_instance['remaining'],
                               key_instance['maximum'])
 
-                # Update account information in database.
-                if not account_manager.refresh_account(account):
-                    status['message'] = (
-                        'Account {} is shadow banned: {} scans without ' +
-                        'rare Pokemon. Switching accounts...').format(
-                            account['username'], status['nonrares'])
-                    log.warning(status['message'])
-                    account_manager.failed_account(account, 'shadowban')
-
+                # Update and check if account is able to continue scanning.
+                if not account_manager.check_account(account, status):
+                    # Exit this loop to get a new account and recreate API.
+                    time.sleep(3)
                     break
 
                 # Delay the desired amount after "scan" completion.

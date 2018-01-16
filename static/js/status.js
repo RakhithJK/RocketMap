@@ -63,7 +63,7 @@ function addMainWorker(hash) {
 }
 
 function processMainWorker(i, worker) {
-    var hash = hashFnv32a(worker['instance_id'], true)
+    var hash = worker['instance_id']
 
     if ($('#worker_' + hash).length === 0) {
         addMainWorker(hash)
@@ -111,7 +111,7 @@ function processWorker(i, worker) {
     const hash = hashFnv32a(worker['username'], true)
     var mainWorkerHash
     if (showWorkers && showInstances) {
-        mainWorkerHash = hashFnv32a(worker['instance_id'], true)
+        mainWorkerHash = worker['instance_id']
         if ($('#table_' + mainWorkerHash).length === 0) {
             return
         }

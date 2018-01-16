@@ -533,15 +533,15 @@ def spin_pokestop(args, account_manager, status, api, account, fort):
         time.sleep(random.uniform(2, 4))  # Don't let Niantic throttle.
 
         # Check for reCaptcha.
-        if 'CHECK_CHALLENGE' in response['responses']:
-            captcha_url = response[
-                'responses']['CHECK_CHALLENGE'].challenge_url
-            if len(captcha_url) > 1:
-                log.debug('Account encountered a reCaptcha.')
-
-                if not account_manager.uncaptcha_account(
-                        account, status, api, captcha_url):
-                    return False
+        captcha = account_manager.handle_captcha(
+            account, status, api, response)
+        if captcha['found'] and captcha['failed']:
+            # Note: Account was removed from rotation.
+            return False
+        elif captcha['found']:
+            # Make another fort search request for the same location
+            # since the previous one was captcha'd.
+            response = fort_search(api, account, fort, location)
 
         spin_result = response['responses']['FORT_SEARCH'].result
         if spin_result == 1:

@@ -66,6 +66,10 @@ def get_args():
                         help='Number of search worker threads to start.')
     parser.add_argument('-hw', '--hlvl-workers', type=int, default=0,
                         help='Number of high level accounts to allocate.')
+    parser.add_argument('-hwht', '--hlvl-workers-holding-time', type=int,
+                        default=60,
+                        help=('Minimum number of seconds for high-level '
+                              'accounts to remain allocated. 0 to disable.'))
     parser.add_argument('-asi', '--account-search-interval', type=int,
                         default=0,
                         help=('Seconds for accounts to search before ' +
@@ -986,6 +990,14 @@ def generate_instance_id(args):
     md5.update(str(args.workers))
     if args.beehive:
         md5.update(str(args.workers_per_hive))
+    if args.no_gyms:
+        md5.update('no-gyms')
+    if args.no_pokemon:
+        md5.update('no-pokemon')
+    if args.no_pokestops:
+        md5.update('no-pokestops')
+    if args.no_raids:
+        md5.update('no-raids')
 
     instance_id = md5.hexdigest()
     args.instance_id = instance_id

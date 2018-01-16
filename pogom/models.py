@@ -24,7 +24,7 @@ from cachetools import cached
 from random import uniform
 from timeit import default_timer
 
-from .utils import (distance, get_pokemon_name, get_pokemon_types,
+from .utils import (get_pokemon_name, get_pokemon_types,
                     get_args, cellid, in_radius, date_secs, clock_between,
                     get_move_name, get_move_damage, get_move_energy,
                     get_move_type, calc_pokemon_level, peewee_attr_to_col)
@@ -42,7 +42,7 @@ args = get_args()
 flaskDb = FlaskDB()
 cache = TTLCache(maxsize=100, ttl=60 * 5)
 
-db_schema_version = 30
+db_schema_version = 31
 
 
 class MyRetryDB(RetryOperationalError, PooledMySQLDatabase):
@@ -108,7 +108,7 @@ class LatLongModel(BaseModel):
 # The account DB model provides methods for various tasks in relation to
 # account handling in RM.
 class Account(LatLongModel):
-    auth_service = Utf8mb4CharField(max_length=5)
+    auth_service = Utf8mb4CharField(max_length=6)
     username = Utf8mb4CharField(primary_key=True, max_length=50)
     password = Utf8mb4CharField(max_length=64)
     instance_id = Utf8mb4CharField(index=True, null=True, max_length=32)
@@ -1133,8 +1133,8 @@ class ScannedLocation(LatLongModel):
 
 
 class MainWorker(BaseModel):
-    worker_name = Utf8mb4CharField(primary_key=True, max_length=50)
-    instance_id = Utf8mb4CharField(index=True, max_length=32)
+    instance_id = Utf8mb4CharField(primary_key=True, max_length=32)
+    worker_name = Utf8mb4CharField(max_length=50)
     message = TextField(null=True, default="")
     method = Utf8mb4CharField(max_length=50)
     last_modified = DateTimeField(index=True)
@@ -2478,29 +2478,32 @@ def encounter_pokemon(args, account_manager, status, api, account, pokemon):
         if account['level'] >= 30:
             hlvl_account = account
             hlvl_api = api
+            time.sleep(args.encounter_delay)
         else:
             using_db_account = True
             attempts = 0
-            while attempts < args.encounter_retries:
+            while attempts < (args.encounter_retries + 1):
                 attempts += 1
+                if attempts > 1:
+                    fetch_delay = attempts + 3
+                    log.debug('Unable to allocate high-level account. ' +
+                              'Retrying in %d seconds.', fetch_delay)
+                    time.sleep(fetch_delay)
                 # Get account to use for IV and CP scanning.
                 hlvl_account = account_manager.get_account(scan_location, True)
+
                 if not hlvl_account:
-                    log.info('Unable to allocate high-level account, waiting '
-                             + '%d seconds before retrying.', attempts + 1)
-                    time.sleep(attempts + 1)
+                    continue
                 else:
                     break
 
-        time.sleep(args.encounter_delay)
-
-        # If we didn't get an account, we can't encounter.
+        # If we didn't get an account, we can't perform the encounter.
         if not hlvl_account:
-            log.error('No L30 accounts are available, please' +
-                      ' consider adding more. Skipping encounter.')
+            log.error('No high-level accounts available, please consider ' +
+                      'adding more. Skipping encounter on Pokemon ID %s.',
+                      pokemon_id)
             return False
 
-        # Logging.
         hlvl_username = hlvl_account['username']
         log.info('Encountering Pokemon ID %s with account %s at %s, %s.',
                  pokemon_id, hlvl_username, scan_location[0], scan_location[1])
@@ -2550,7 +2553,7 @@ def encounter_pokemon(args, account_manager, status, api, account, pokemon):
             log.warning('Expected account of level 30 or higher, ' +
                         'but account %s is only level %d',
                         hlvl_username, hlvl_account['level'])
-            account_manager.failed_account(hlvl_account, 'not hlvl')
+            account_manager.failed_account(hlvl_account, 'Not high-level')
             return False
 
         if using_db_account:
@@ -2560,54 +2563,66 @@ def encounter_pokemon(args, account_manager, status, api, account, pokemon):
             hlvl_account['last_scan'] = datetime.utcnow()
 
         attempts = 0
-        while attempts < args.encounter_retries:
+        enc_status = 0
+        while attempts < (args.encounter_retries + 1):
             attempts += 1
+            if attempts > 1:
+                enc_delay = args.encounter_delay + uniform(0.5, 1.5)
+                log.error('Account %s failed encounter (code %d) on Pokemon ' +
+                          'ID %s. Attempt #%d, retrying in %.3f seconds.',
+                          hlvl_username, enc_status, pokemon_id, attempts,
+                          enc_delay)
+                time.sleep(enc_delay)
+
             # Encounter Pokémon.
             encounter_result = encounter(
                 hlvl_api, hlvl_account, pokemon.encounter_id,
                 pokemon.spawn_point_id, scan_location)
 
             # Handle errors.
-            if encounter_result:
-                responses = encounter_result['responses']
-                # Check for reCaptcha.
-                if 'CHECK_CHALLENGE' in responses:
-                    captcha_url = responses['CHECK_CHALLENGE'].challenge_url
-                    if len(captcha_url) > 1:
-                        if not account_manager.uncaptcha_account(
-                                hlvl_account, status, hlvl_api, captcha_url):
-                            return False
+            if not encounter_result:
+                continue
 
-                # Verify if encounter request was successful.
-                if 'ENCOUNTER' not in responses:
-                    log.error('Account %s failed encounter on Pokemon ID %s.',
-                              hlvl_username, pokemon_id)
-                    time.sleep(uniform(2.0, 4.0))
-                    continue
+            # Check for reCaptcha.
+            captcha = account_manager.handle_captcha(
+                    hlvl_account, status, hlvl_api, encounter_result)
+            if captcha['found'] and captcha['failed']:
+                # Note: Account was removed from rotation.
+                break
+            elif captcha['found']:
+                # Make another encounter request for the same location
+                # since the previous one was captcha'd.
+                encounter_result = encounter(
+                    hlvl_api, hlvl_account, pokemon.encounter_id,
+                    pokemon.spawn_point_id, scan_location)
 
-                # Validate encounter status.
-                enc_status = responses['ENCOUNTER'].status
-                if enc_status == 1:
-                    pokemon_info = responses[
-                        'ENCOUNTER'].wild_pokemon.pokemon_data
-                    # Logging: let the user know we succeeded.
-                    log.info('Successfuly encountered Pokemon ID %s at ' +
-                             '%s, %s on attempt #%d: %s CP, %s/%s/%s IVs.',
-                             pokemon_id, pokemon.latitude, pokemon.longitude,
-                             attempts, pokemon_info.cp,
-                             pokemon_info.individual_attack,
-                             pokemon_info.individual_defense,
-                             pokemon_info.individual_stamina)
+            responses = encounter_result['responses']
 
-                    result = pokemon_info
-                    break
-                else:
-                    enc_delay = args.encounter_delay + uniform(1.0, 3.0)
-                    log.error('Account %s failed encounter on Pokemon ID %s ' +
-                              'with code: %d. Retrying in %.1f seconds.',
-                              hlvl_username, pokemon_id, enc_status, enc_delay)
-                    time.sleep()
+            # Verify if encounter request was successful.
+            if 'ENCOUNTER' not in responses:
+                continue
 
+            # Validate encounter status.
+            enc_status = responses['ENCOUNTER'].status
+            if enc_status != 1:
+                continue
+
+            pokemon_info = responses['ENCOUNTER'].wild_pokemon.pokemon_data
+            log.info('Successfuly encountered Pokemon ID %s at ' +
+                     '%s, %s on attempt #%d: %s CP, %s/%s/%s IVs.',
+                     pokemon_id, pokemon.latitude, pokemon.longitude,
+                     attempts, pokemon_info.cp,
+                     pokemon_info.individual_attack,
+                     pokemon_info.individual_defense,
+                     pokemon_info.individual_stamina)
+
+            result = pokemon_info
+            break
+
+        if not result:
+            log.error('Account %s failed %d encounter (code %d) on Pokemon ' +
+                      'ID %s. Attempt #%d, skipping encounter.',
+                      hlvl_username, enc_status, pokemon_id, attempts)
     except Exception as e:
         log.exception('There was an exception encountering Pokemon ID %s ' +
                       'with account %s: %s.', pokemon_id, hlvl_username, e)
@@ -3399,10 +3414,6 @@ def database_migrate(db, old_ver):
                        'ADD CONSTRAINT CONSTRAINT_4 CHECK ' +
                        '(`latest_seen` <= 3600);')
 
-    if old_ver < 23:
-        db.drop_tables([WorkerStatus])
-        db.drop_tables([MainWorker])
-
     if old_ver < 24:
         migrate(
             migrator.drop_index('pokemon', 'pokemon_disappear_time'),
@@ -3456,6 +3467,10 @@ def database_migrate(db, old_ver):
             'MODIFY COLUMN `remaining` INTEGER,'
             'MODIFY COLUMN `peak` INTEGER;'
         )
+
+    if old_ver < 31:
+        db.drop_tables([WorkerStatus])
+        db.drop_tables([MainWorker])
 
     # Always log that we're done.
     log.info('Schema upgrade complete.')

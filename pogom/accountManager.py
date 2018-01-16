@@ -46,7 +46,7 @@ class AccountManager(object):
 
     def run_manager(self):
         # Release allocated accounts previously used by this instance.
-        self.release_instance()
+        self.reset_instance()
         # Load required accounts to start working.
         self.account_keeper(notice=True)
         # Captcha solver current thread ID.
@@ -59,12 +59,12 @@ class AccountManager(object):
             cycle += 1
 
             # Run once every 15 seconds.
+            self.account_keeper(notice=(cycle % 40 == 0))
             if self.args.captcha_solving:
                 self.captcha_manager()
 
             # Run once every 60 seconds.
             if cycle % 4 == 0:
-                self.account_keeper(notice=(cycle % 40 == 0))
                 self.account_recycler()
 
             # Run once every 10 min.
@@ -207,7 +207,7 @@ class AccountManager(object):
 
         if 'captcha' in self.args.wh_types:
             hold_time = (datetime.utcnow() -
-                         account['last_scan']).total_seconds()
+                         account['last_modified']).total_seconds()
             wh_message = {
                 'status_name': self.args.status_name,
                 'mode': 'manual' if token else '2captcha',
@@ -222,15 +222,20 @@ class AccountManager(object):
         time.sleep(1)
 
     def account_keeper(self, notice=False):
-        scan_count = (len(self.accounts['scan']) +
-                      len(self.accounts['active_scan']))
-        hlvl_count = (len(self.accounts['hlvl']) +
-                      len(self.accounts['active_hlvl']))
-        log.debug('Account keeper running. Scanner: %d. High-level: %d',
-                  scan_count, hlvl_count)
+        scanner = len(self.accounts['scan'])
+        active_scanner = len(self.accounts['active_scan'])
+        hlvl = len(self.accounts['hlvl'])
+        active_hlvl = len(self.accounts['active_hlvl'])
+
+        log.debug('Account keeper running. Scanners: %d active + %d spares. ' +
+                  'High-level: %d active + %d spares.',
+                  scanner, active_scanner, hlvl, active_hlvl)
+
+        scanner_count = scanner + active_scanner
+        hlvl_count = hlvl + active_hlvl
 
         # Check for missing scanner accounts.
-        scan_missing = self.args.workers - scan_count
+        scan_missing = self.args.workers - scanner_count
         scan_fetched = self.replenish_accounts(scan_missing, hlvl=False)
         if notice and scan_fetched < scan_missing:
             log.warning('Insufficient scanner accounts in the database.')
@@ -241,6 +246,29 @@ class AccountManager(object):
         if notice and hlvl_fetched < hlvl_missing:
             log.warning('Insufficient high-level accounts in the database.')
 
+        # Check if high-level accounts have been on hold for too long.
+        if not self.args.hlvl_workers and self.args.hlvl_workers_holding_time:
+            release_usernames = []
+            with self.accounts_lock:
+                for username, account in self.accounts['hlvl'].iteritems():
+                    hold_time = (datetime.utcnow() -
+                                 account['last_modified']).total_seconds()
+                    log.info('Account %s on hold for %d seconds.',
+                             username, hold_time)
+                    if hold_time > self.args.hlvl_workers_holding_time:
+                        release_usernames.append(username)
+
+                for username in release_usernames:
+                    account = self.accounts['hlvl'].pop(username)
+                    # Mark the account available to be used elsewhere.
+                    account['allocated'] = False
+                    # Update account information in database.
+                    self.dbq.put((Account, {0: Account.db_format(account)}))
+            if release_usernames:
+                log.info('Released %d high-level accounts to be reused.',
+                         len(release_usernames))
+
+    # Monitor failed accounts to check their status.
     def account_recycler(self):
         now = datetime.utcnow()
         failed_count = len(self.accounts['failed'])
@@ -268,6 +296,11 @@ class AccountManager(object):
                 # Update account information in database.
                 account['fail'] = False
                 self.dbq.put((Account, {0: Account.db_format(account)}))
+
+                # Redundant check: make sure account is not already active.
+                if self.find_account(account['username']):
+                    log.error('Account already active! Aborting.')
+                    continue
 
                 with self.accounts_lock:
                     # Return account to the respective account pool.
@@ -350,8 +383,8 @@ class AccountManager(object):
 
         log.info('Inserted %d new accounts into the database.', count)
 
-    # Release accounts that may have been working for this instance.
-    def release_instance(self):
+    # Reset accounts that may have been used by this instance.
+    def reset_instance(self):
         query = (Account
                  .update(allocated=False, fail=False)
                  .where(Account.instance_id == self.instance_id))
@@ -385,12 +418,8 @@ class AccountManager(object):
                  .dicts())
 
         accounts = {}
-        if hlvl:
-            for dba in query:
-                accounts[dba['username']] = dba
-        else:
-            for dba in query:
-                accounts[dba['username']] = dba
+        for dba in query:
+            accounts[dba['username']] = dba
 
         return accounts
 
@@ -401,14 +430,15 @@ class AccountManager(object):
         if len(accounts) > 0:
             usernames = accounts.keys()
             rows = 0
-            for idx in range(0, len(usernames), step):
-                query = (Account
-                         .update(allocated=True,
-                                 instance_id=self.instance_id)
-                         .where((Account.username <<
-                                 usernames[idx:idx+step])))
-
-                rows += query.execute()
+            with Account.database().atomic():
+                for idx in range(0, len(usernames), step):
+                    query = (Account
+                             .update(allocated=True,
+                                     instance_id=self.instance_id)
+                             .where((Account.username <<
+                                     usernames[idx:idx+step]) &
+                                    (Account.allocated == 0)))
+                    rows += query.execute()
             unallocated = len(usernames) - rows
             if unallocated > 0:
                 log.error('Unable to allocate %d accounts.', unallocated)
@@ -420,24 +450,24 @@ class AccountManager(object):
     def fetch_accounts(self, count, reuse, hlvl):
         accounts = {}
         try:
-            with Account.database().atomic():
-                accounts = self._load_accounts(count, reuse, hlvl)
-                if not self._allocate_accounts(accounts):
-                    return 0
+            accounts = self._load_accounts(count, reuse, hlvl)
+            if not self._allocate_accounts(accounts):
+                return 0
         except Exception as e:
             log.exception('Unable to fetch accounts from the database: %s', e)
+            return 0
 
-        # Populate respective account pool.
+        # Populate the respective spare account pool.
         if hlvl:
-            account_pool = self.accounts['hlvl']
+            spare_pool = 'hlvl'
         else:
-            account_pool = self.accounts['scan']
+            spare_pool = 'scan'
 
         with self.accounts_lock:
             for username, account in accounts.iteritems():
                 account['allocated'] = True
                 account['instance_id'] = self.instance_id
-                account_pool[username] = account
+                self.accounts[spare_pool][username] = account
 
         return len(accounts)
 
@@ -447,24 +477,25 @@ class AccountManager(object):
         else:
             account_type = 'scanner'
 
-        log.debug('Fetching %d %s accounts.', count, account_type)
         fetch_count = 0
         if count > 0:
+            log.info('Fetching %d %s accounts.', count, account_type)
             fetch_count = self.fetch_accounts(count, reuse=True, hlvl=hlvl)
             count -= fetch_count
         if count > 0:
             fetch_count += self.fetch_accounts(count, reuse=False, hlvl=hlvl)
 
-        log.debug('Loaded %d %s accounts.', fetch_count, account_type)
+        log.debug('Allocated %d %s accounts.', fetch_count, account_type)
         return fetch_count
 
-    # Release an account back to the pool after it was used.
+    # Release an account back to the spare account pool.
     def release_account(self, account):
         username = account['username']
+        log.info('Moving active account %s to spare account pool.', username)
 
         with self.accounts_lock:
             if self.accounts['active_hlvl'].pop(username, None):
-                if not self.args.hlvl_workers:
+                if not self.args.hlvl_workers_holding_time:
                     # Mark the account available to be used elsewhere.
                     account['allocated'] = False
                 else:
@@ -472,7 +503,7 @@ class AccountManager(object):
             elif self.accounts['active_scan'].pop(username, None):
                 self.accounts['scan'][username] = account
             else:
-                log.error('Unable to find account %s in account pool.',
+                log.error('Unable to find account %s in active account pool.',
                           username)
 
         # Update account information in database.
@@ -484,55 +515,98 @@ class AccountManager(object):
             if not self.args.hlvl_workers:
                 # Fetch from the database a spare high-level account.
                 self.replenish_accounts(1, hlvl=True)
-            accounts = self.accounts['hlvl']
-            accounts_active = self.accounts['active_hlvl']
+            spare_pool = 'hlvl'
+            active_pool = 'active_hlvl'
             speed_limit = self.args.hlvl_kph
         else:
-            accounts = self.accounts['scan']
-            accounts_active = self.accounts['active_scan']
+            spare_pool = 'scan'
+            active_pool = 'active_scan'
             speed_limit = self.args.kph
 
         picked_account = None
         with self.accounts_lock:
             now = datetime.utcnow()
             picked_username = None
-            # Loop through available accounts.
+            last_scan_secs = 0
+
+            # Loop through available spare accounts.
             # Reversed account iteration to maximize reusage.
-            for username in reversed(accounts.keys()):
-                account = accounts[username]
-                # Check if we're below speed limit for account.
+            account_usernames = self.accounts[spare_pool].keys()
+            for username in reversed(account_usernames):
+                account = self.accounts[spare_pool][username]
+
+                # Check if this account remains below speed limit.
                 if location and speed_limit and account['last_scan']:
-                    time_passed = (now - account['last_scan']).total_seconds()
+                    last_scan_secs = (now -
+                                      account['last_scan']).total_seconds()
                     old_location = (account['latitude'], account['longitude'])
 
                     meters = distance(old_location, location)
-                    cooldown_time_sec = meters / speed_limit * 3.6
+                    cooldown_time_secs = meters / speed_limit * 3.6
 
                     # Not enough time has passed for this one.
-                    sleep_time = cooldown_time_sec - time_passed
-                    if sleep_time > 0:
+                    sleep_time = cooldown_time_secs - last_scan_secs
+                    if sleep_time > 10:
                         continue
 
-                # We've found an account that's available to scan.
+                # We've found an account ready to work.
                 picked_username = username
                 break
 
-            picked_account = accounts.pop(picked_username, None)
-            # Put account in circulation.
-            if picked_account:
-                accounts_active[picked_username] = picked_account
+            if picked_username:
+                picked_account = self.accounts[spare_pool].pop(picked_username)
+
+                if last_scan_secs > 0:
+                    log.info('Picked account %s from spare account pool. ' +
+                             'Last scan was made %d seconds ago.',
+                             picked_username, last_scan_secs)
+                else:
+                    log.info('Picked account %s from spare account pool. ' +
+                             'No location/speed-limit to check.',
+                             picked_username)
+
+                # Redundant check: make sure account is not already active.
+                if picked_username in self.accounts[active_pool]:
+                    log.error('Account already active! Aborting.')
+                    return None
+
+                # Put account in active account pool.
+                self.accounts[active_pool][picked_username] = picked_account
 
         return picked_account
 
     # Check account status and update the database.
-    def refresh_account(self, account):
+    def check_account(self, account, status):
+        # Check if account is still in rotation.
+        if not self.find_account(account['username']):
+            status['message'] = (
+                'Account {} was removed out of rotation. ' +
+                'Switching accounts...').format(account['username'])
+            return False
+
         # Check if account is shadow banned.
         if (not self.args.shadow_ban_scan and
                 account['banned'] == AccountBanned.Shadowban):
+            status['message'] = (
+                'Account {} is shadow banned: {} scans without ' +
+                'rare Pokemon. Switching accounts...').format(
+                    account['username'], status['norares'])
+            log.warning(status['message'])
+            self.failed_account(account, 'shadowban')
             return False
 
         self.dbq.put((Account, {0: Account.db_format(account)}))
         return True
+
+    # Check if account is still in rotation.
+    def find_account(self, username):
+        if username in self.accounts['active_hlvl']:
+            return True
+
+        if username in self.accounts['active_scan']:
+            return True
+
+        return False
 
     # Remove account from rotation.
     def remove_account(self, account):
@@ -544,60 +618,77 @@ class AccountManager(object):
 
         return False
 
-    def uncaptcha_account(self, account, status, api, captcha_url):
+    def handle_captcha(self, account, status, api, response):
         username = account['username']
+
+        result = {
+            'found': False,
+            'failed': False,
+        }
+
+        if 'CHECK_CHALLENGE' not in response.get('responses', {}):
+            return result
+
+        captcha_url = response['responses']['CHECK_CHALLENGE'].challenge_url
+
+        if len(captcha_url) < 2:
+            return result
+
+        # Update thread status if it belongs to this account.
+        if status['username'] == account['username']:
+            status['captcha'] += 1
+
+        result['found'] = True
+        result['failed'] = True
 
         if not self.args.captcha_solving:
             # Update account information in database.
             account['captcha'] = True
             account['fail'] = True
             self.dbq.put((Account, {0: Account.db_format(account)}))
+
             # Remove account from rotation.
             if not self.remove_account(username):
-                log.error('Account %s was not active.', username)
-                return False
+                log.warning('Account %s is already benched.', username)
+            else:
+                self.accounts['failed'].append((account, 'captcha'))
+                status['message'] = (
+                    'Account {} has encountered a captcha. ' +
+                    'Putting account away.').format(username)
+                log.warning(status['message'])
 
-            self.accounts['failed'].append((account, 'captcha'))
-            status['message'] = (
-                'Account {} has encountered a captcha. ' +
-                'Putting account away.').format(username)
-            log.warning(status['message'])
+                # Send webhook message.
+                if 'captcha' in self.args.wh_types:
+                    wh_message = {
+                        'status_name': self.args.status_name,
+                        'status': 'encounter',
+                        'mode': 'disabled',
+                        'account': username,
+                        'captcha': status['captcha'],
+                        'time': 0
+                    }
+                    self.whq.put(('captcha', wh_message))
 
-            # Send webhook message.
-            if 'captcha' in self.args.wh_types:
-                wh_message = {
-                    'status_name': self.args.status_name,
-                    'status': 'encounter',
-                    'mode': 'disabled',
-                    'account': username,
-                    'captcha': status['captcha'],
-                    'time': 0
-                }
-                self.whq.put(('captcha', wh_message))
-            return False
-
-        if self.args.captcha_key and self.args.manual_captcha_timeout == 0:
+        elif self.args.captcha_key and self.args.manual_captcha_timeout == 0:
             if self.automatic_captcha_solve(account, status, api, captcha_url):
                 # Solved the captcha on the spot, no fuzz.
-                return True
+                result['failed'] = False
+            else:
+                # Update account information in database.
+                account['captcha'] = True
+                account['fail'] = True
+                self.dbq.put((Account, {0: Account.db_format(account)}))
 
-            # Update account information in database.
-            account['captcha'] = True
-            account['fail'] = True
-            self.dbq.put((Account, {0: Account.db_format(account)}))
+                # Remove account from rotation.
+                if not self.remove_account(username):
+                    log.warning('Account %s is already benched.', username)
+                else:
+                    self.accounts['failed'].append((account, 'captcha'))
+                    status['message'] = (
+                        'Account {} has encountered a captcha. Failed to ' +
+                        'uncaptcha, putting account away.').format(username)
+                    log.warning(status['message'])
 
-            # Remove account from rotation.
-            if not self.remove_account(username):
-                log.error('Account %s was not active.', username)
-                return False
-
-            self.accounts['failed'].append((account, 'captcha fail'))
-            status['message'] = (
-                'Account {} has encountered a captcha. ' +
-                'Failed to uncaptcha, putting account away.').format(username)
-            log.warning(status['message'])
-
-            return False
         else:
             # Update account information in database.
             account['captcha'] = True
@@ -605,27 +696,26 @@ class AccountManager(object):
 
             # Remove account from rotation.
             if not self.remove_account(username):
-                log.error('Account %s was not active.', username)
-                return False
+                log.warning('Account %s is already benched.', username)
+            else:
+                self.accounts['captcha'].append((account, status, captcha_url))
+                status['message'] = (
+                    'Account {} has encountered a captcha. ' +
+                    'Waiting for token.').format(username)
+                log.warning(status['message'])
 
-            self.accounts['captcha'].append((account, status, captcha_url))
-            status['message'] = (
-                'Account {} has encountered a captcha. ' +
-                'Waiting for token.').format(username)
-            log.warning(status['message'])
+                if 'captcha' in self.args.wh_types:
+                    wh_message = {
+                        'status_name': self.args.status_name,
+                        'status': 'encounter',
+                        'mode': 'manual',
+                        'account': username,
+                        'captcha': status['captcha'],
+                        'time': self.args.manual_captcha_timeout
+                    }
+                    self.whq.put(('captcha', wh_message))
 
-            if 'captcha' in self.args.wh_types:
-                wh_message = {
-                    'status_name': self.args.status_name,
-                    'status': 'encounter',
-                    'mode': 'manual',
-                    'account': username,
-                    'captcha': status['captcha'],
-                    'time': self.args.manual_captcha_timeout
-                }
-                self.whq.put(('captcha', wh_message))
-
-            return False
+        return result
 
     # Returns true if captcha was succesfully solved.
     def automatic_captcha_solve(self, account, status, api, captcha_url):
@@ -692,7 +782,7 @@ class AccountManager(object):
 
         # Remove account from rotation.
         if not self.remove_account(account):
-            log.error('Account %s not found in account pool.', username)
+            log.error('Account %s not found in active account pool.', username)
             return
 
         if account['banned'] == AccountBanned.Shadowban:
