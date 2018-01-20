@@ -2473,12 +2473,11 @@ def encounter_pokemon(args, account_manager, status, api, account, pokemon):
         hlvl_api = None
         pokemon_id = pokemon.pokemon_data.pokemon_id
         scan_location = [pokemon.latitude, pokemon.longitude]
-        # If the host has L30s in the regular account pool, we
-        # can just use the current account.
+
+        # Allow scanner accounts to encounter Pokemon if they're high-level.
         if account['level'] >= 30:
             hlvl_account = account
             hlvl_api = api
-            time.sleep(args.encounter_delay)
         else:
             using_db_account = True
             attempts = 0
@@ -2508,21 +2507,30 @@ def encounter_pokemon(args, account_manager, status, api, account, pokemon):
         log.info('Encountering Pokemon ID %s with account %s at %s, %s.',
                  pokemon_id, hlvl_username, scan_location[0], scan_location[1])
 
-        # If not args.no_api_store is enabled, we need to
-        # re-use an old API object if it's stored and we're
-        # using an account from the AccountSet.
-        if not args.no_api_store and using_db_account:
-            hlvl_api = hlvl_account.get('api', None)
+        check_proxy = args.proxy
+        if using_db_account:
+            # Check if a previously API object is stored.
+            if not args.no_api_store:
+                hlvl_api = hlvl_account.get('api', None)
 
-        # Make new API for this account if we're not using an
-        # API that's already logged in.
-        if not hlvl_api:
-            hlvl_api = setup_api(args, status, hlvl_account)
+            # No luck, we need to create a new API object.
+            if not hlvl_api:
+                hlvl_api = setup_api(args, status, hlvl_account)
+                check_proxy = False
+
+                # Store new API object for later reusage.
+                if not args.no_api_store:
+                    hlvl_account['api'] = hlvl_api
+
+            # Update account information.
+            hlvl_account['latitude'] = scan_location[0]
+            hlvl_account['longitude'] = scan_location[1]
+            hlvl_account['last_scan'] = datetime.utcnow()
 
         # If the already existent API is using a proxy but
         # it's not alive anymore, we need to get a new proxy.
-        elif (args.proxy and
-              (hlvl_api._session.proxies['http'] not in args.proxy)):
+        if (check_proxy and
+                (hlvl_api._session.proxies['http'] not in args.proxy)):
             proxy_idx, proxy_new = get_new_proxy(args)
             hlvl_api.set_proxy({
                 'http': proxy_new,
@@ -2538,10 +2546,6 @@ def encounter_pokemon(args, account_manager, status, api, account, pokemon):
             log.debug('Using hashing key %s for this encounter.', key)
             hlvl_api.activate_hash_server(key)
 
-        # We have an API object now. If necessary, store it.
-        if using_db_account and not args.no_api_store:
-            hlvl_account['api'] = hlvl_api
-
         # Set location.
         hlvl_api.set_position(*scan_location)
 
@@ -2553,14 +2557,8 @@ def encounter_pokemon(args, account_manager, status, api, account, pokemon):
             log.warning('Expected account of level 30 or higher, ' +
                         'but account %s is only level %d',
                         hlvl_username, hlvl_account['level'])
-            account_manager.failed_account(hlvl_account, 'Not high-level')
+            account_manager.failed_account(hlvl_account, 'not high-level')
             return False
-
-        if using_db_account:
-            # Update account information.
-            hlvl_account['latitude'] = scan_location[0]
-            hlvl_account['longitude'] = scan_location[1]
-            hlvl_account['last_scan'] = datetime.utcnow()
 
         attempts = 0
         enc_status = 0
@@ -2573,6 +2571,8 @@ def encounter_pokemon(args, account_manager, status, api, account, pokemon):
                           hlvl_username, enc_status, pokemon_id, attempts,
                           enc_delay)
                 time.sleep(enc_delay)
+            else:
+                time.sleep(args.encounter_delay)
 
             # Encounter Pokémon.
             encounter_result = encounter(
@@ -2620,7 +2620,7 @@ def encounter_pokemon(args, account_manager, status, api, account, pokemon):
             break
 
         if not result:
-            log.error('Account %s failed %d encounter (code %d) on Pokemon ' +
+            log.error('Account %s failed encounter (code %d) on Pokemon ' +
                       'ID %s. Attempt #%d, skipping encounter.',
                       hlvl_username, enc_status, pokemon_id, attempts)
     except Exception as e:

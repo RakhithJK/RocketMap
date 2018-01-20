@@ -423,8 +423,9 @@ def main():
             t.start()
 
     # Check MainWorker table to avoid running duplicate instances.
-    if MainWorker.get_by_instance(args.instance_id):
-        log.critical('Detected a duplicate instance launch with ID: %s',
+    if MainWorker.get_by_instance(args.instance_id, 10):
+        log.critical('Detected a possible duplicate instance launch with ' +
+                     'ID %s. Please wait 10 seconds before restarting.',
                      args.instance_id)
         sys.exit(1)
 

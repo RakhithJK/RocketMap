@@ -592,15 +592,15 @@ def get_stats_message(threadStatus, search_items_queue_array, db_updates_queue,
 
     message = (
         'Queues: {} search items, {} db updates, {} webhook. ' +
-        'Scanner accounts: {}/{} active. High-level accounts: {}/{} active. ' +
+        'Scanner accounts: {}/{} spares. High-level accounts: {}/{} spares. ' +
         'Accounts on hold: {}. Accounts with captcha: {}\n'
     ).format(search_items_queue_size,
              db_updates_queue.qsize(),
              wh_queue.qsize(),
-             len(account_manager.accounts['scan']),
-             len(account_manager.accounts['active_scan']),
-             len(account_manager.accounts['hlvl']),
-             len(account_manager.accounts['active_hlvl']),
+             len(account_manager.active['scanner']),
+             len(account_manager.accounts['scanner']),
+             len(account_manager.active['high-level']),
+             len(account_manager.accounts['high-level']),
              len(account_manager.accounts['failed']),
              len(account_manager.accounts['captcha']))
 
@@ -824,7 +824,7 @@ def search_worker_thread(args, account_manager, control_flags, status,
                             account['username'],
                             args.max_failures)
                     log.warning(status['message'])
-                    account_manager.failed_account(account, 'Failures')
+                    account_manager.failed_account(account, 'failures')
 
                     # Exit this loop to get a new account and recreate API.
                     break
@@ -839,7 +839,7 @@ def search_worker_thread(args, account_manager, control_flags, status,
                         'accounts...').format(account['username'],
                                               args.max_empty)
                     log.warning(status['message'])
-                    account_manager.failed_account(account, 'Empty scans')
+                    account_manager.failed_account(account, 'empty scans')
 
                     # Exit this loop to get a new account and recreate API.
                     break
@@ -865,7 +865,7 @@ def search_worker_thread(args, account_manager, control_flags, status,
                         'Account {} is being rotated out to rest.'.format(
                             account['username']))
                     log.info(status['message'])
-                    account_manager.failed_account(account, 'Resting')
+                    account_manager.failed_account(account, 'resting')
 
                     # Exit this loop to get a new account and recreate API.
                     break
