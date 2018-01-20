@@ -64,6 +64,8 @@ def get_args():
                         is_config_file=True, help='Set a shared config')
     parser.add_argument('-w', '--workers', type=int,
                         help='Number of search worker threads to start.')
+    parser.add_argument('-ws', '--workers-spare', type=int, default=0,
+                        help='Number of spare scanner accounts to keep.')
     parser.add_argument('-wht', '--workers-holding-time', type=int,
                         default=300,
                         help=('Keep excess scanner accounts allocated ' +
@@ -74,6 +76,8 @@ def get_args():
     parser.add_argument('-hwm', '--hlvl-workers-max', type=int, default=2,
                         help=('Maximum number of high-level accounts that ' +
                               'can be allocated "on-the-fly". Default is 2.'))
+    parser.add_argument('-hws', '--hlvl-workers-spare', type=int, default=0,
+                        help='Number of spare high-level accounts to keep.')
     parser.add_argument('-hwht', '--hlvl-workers-holding-time', type=int,
                         default=120,
                         help=('Keep excess high-level accounts allocated ' +

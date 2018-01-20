@@ -28,6 +28,8 @@ class AccountManager(object):
         self.key_scheduler = None
         self.high_level = high_level
         self.instance_id = args.instance_id
+        self.target_scan_count = args.workers + args.workers_spare
+        self.target_hlvl_count = args.hlvl_workers + args.hlvl_workers_spare
 
         self.allocated = {
             'scanner': set(),
@@ -140,11 +142,11 @@ class AccountManager(object):
         if hlvl:
             account_pool = 'high-level'
             holding_time = self.args.hlvl_workers_holding_time
-            target_count = self.args.hlvl_workers
+            target_count = self.target_hlvl_count
         else:
             account_pool = 'scanner'
             holding_time = self.args.workers_holding_time
-            target_count = self.args.workers
+            target_count = self.target_scan_count
 
         accounts_lock = self.accounts_locks[account_pool]
         allocated_pool = self.allocated[account_pool]
