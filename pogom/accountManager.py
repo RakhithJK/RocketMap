@@ -583,7 +583,7 @@ class AccountManager(object):
         # Default result: no captcha, no failure.
         result = {'found': False, 'failed': False}
 
-        if 'CHECK_CHALLENGE' not in response.get('responses', {}):
+        if response and 'CHECK_CHALLENGE' not in response.get('responses', {}):
             return result
 
         captcha_url = response['responses']['CHECK_CHALLENGE'].challenge_url
