@@ -762,7 +762,7 @@ def search_worker_thread(args, account_manager, control_flags, status,
                 if status['username'] == '':
                     status['message'] = 'Waiting for an account to scan.'
                     log.info(status['message'])
-                time.sleep(60)
+                time.sleep(30)
                 continue
 
             # Reset account statistics tracked per loop.

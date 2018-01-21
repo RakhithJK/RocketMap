@@ -59,7 +59,7 @@ class AccountManager(object):
         # Release accounts previously used by this instance.
         self._release_instance()
         # Load required accounts to start working.
-        self._account_keeper()
+        self._account_keeper(True)
         # Captcha solver current thread ID.
         self.thread_id = 0
 
@@ -85,11 +85,10 @@ class AccountManager(object):
             time.sleep(15)
 
     def _account_keeper(self, notice=False):
-        if notice:
-            log.info('Account keeper running. ' +
-                     'Managing %d scanner and %d high-level accounts.',
-                     len(self.allocated['scanner']),
-                     len(self.allocated['high-level']))
+        log.debug('Account keeper running. ' +
+                  'Managing %d scanner and %d high-level accounts.',
+                  len(self.allocated['scanner']),
+                  len(self.allocated['high-level']))
 
         self._replenish_accounts(False, notice)
         self._replenish_accounts(True, notice)
@@ -105,51 +104,24 @@ class AccountManager(object):
             account_pool = 'scanner'
             target_count = self.args.workers
 
-        replenish_count = self.replenish_count[account_pool]
+        available_count = (len(self.active[account_pool]) +
+                           len(self.accounts[account_pool]))
+        replenish_count = target_count - available_count
 
-        if replenish_count <= 0 or target_count <= 0:
+        if replenish_count <= 0:
             return
 
-        accounts_lock = self.accounts_locks[account_pool]
-        allocated_pool = self.allocated[account_pool]
-        spare_pool = self.accounts[account_pool]
-
-        log.info('Fetching %d %s accounts from database.',
-                 replenish_count, account_pool)
         accounts = self._fetch_accounts(replenish_count, hlvl)
+        log.debug('Fetched %d %s accounts from database.',
+                  len(accounts), account_pool)
 
-        if not accounts and notice:
-            log.warning('Insufficient %s accounts in database.', account_pool)
-            return
+        missing_count = replenish_count - len(accounts)
+        if notice and missing_count:
+            log.warning('Insufficient available accounts in database. ' +
+                        'Unable to replenish %d %s accounts.',
+                        missing_count, account_pool)
 
-        log.info('Loading %d %s accounts to spare account pool.',
-                 len(accounts), account_pool)
-
-        # Add allocated accounts to spare account pool.
-        allocated_count = 0
-        with accounts_lock:
-            for username, account in accounts.iteritems():
-                # Skip the account if it's already allocated.
-                if username in allocated_pool:
-                    continue
-                allocated_count += 1
-                # Add account to allocated account pool.
-                allocated_pool.add(username)
-
-                # Add account to spare account pool.
-                account['allocated'] = True
-                account['instance_id'] = self.instance_id
-                account['last_modified'] = datetime.utcnow()
-                spare_pool[username] = account
-
-            self.replenish_count[account_pool] -= allocated_count
-
-        failed_count = replenish_count - allocated_count
-        if failed_count > 0:
-            log.error('Failed to allocate %d %s accounts from database.',
-                      failed_count, account_pool)
-
-    # Check for excess accounts that can be deallocated.
+    # Check for excess accounts that can be released from this instance.
     def _release_accounts(self, hlvl):
         if hlvl:
             account_pool = 'high-level'
@@ -162,10 +134,11 @@ class AccountManager(object):
 
         accounts_lock = self.accounts_locks[account_pool]
         allocated_pool = self.allocated[account_pool]
+        active_pool = self.active[account_pool]
         spare_pool = self.accounts[account_pool]
 
-        excess_count = min(len(allocated_pool) - target_count,
-                           len(spare_pool))
+        available_count = (len(active_pool) + len(spare_pool))
+        excess_count = available_count - target_count
 
         if excess_count <= 0:
             return
@@ -181,7 +154,8 @@ class AccountManager(object):
                     account = spare_pool.pop(username)
                     account['allocated'] = False
                     allocated_pool.remove(username)
-                    log.info('Deallocated %s account %s: idle for %d seconds.',
+                    log.info('Released %s account %s from this instance. ' +
+                             'Waited idle for %d seconds.',
                              account_pool, username, hold_time)
 
                     released_accounts[username] = Account.db_format(account)
@@ -195,7 +169,7 @@ class AccountManager(object):
         if released_accounts:
             # Update account information in database.
             self.dbq.put((Account, released_accounts))
-            log.debug('Released and deallocated %d excess %s accounts.',
+            log.debug('Released %d excess %s accounts from this instance.',
                       len(released_accounts), account_pool)
 
     # Monitor failed accounts to check their status.
@@ -237,21 +211,21 @@ class AccountManager(object):
                 continue
 
             if account['banned'] > ban_level:
-                # Deallocate banned accounts.
+                # Release banned accounts from this instance.
                 account_pool = account['account_pool']
-                log.info('Released and deallocated banned account %s.',
-                         account['username'])
+                log.info('Released banned %s account %s from this instance.',
+                         account_pool, account['username'])
                 account['allocated'] = False
                 self.allocated[account_pool].remove(account['username'])
             else:
-                # Return account to the appropriate account pool.
-                log.info('Returning account %s to spare account pool.',
-                         account['username'])
-
                 if account['level'] >= self.high_level:
                     account_pool = 'high-level'
                 else:
                     account_pool = 'scanner'
+
+                # Return account to the appropriate account pool.
+                log.info('Returning %s account %s to spare account pool.',
+                         account_pool, account['username'])
 
                 account['account_pool'] = account_pool
                 spare_pool = self.accounts[account_pool]
@@ -305,7 +279,7 @@ class AccountManager(object):
     def clear_all(self):
         query = Account.delete().execute()
         if query:
-            log.info('Cleared %d accounts from the database.', query)
+            log.info('Cleared %d accounts from database.', query)
 
     # Filter account list and insert new accounts in the database.
     def insert_new(self, accounts):
@@ -341,7 +315,7 @@ class AccountManager(object):
         log.debug('Released %d accounts previously used by this instance.',
                   rows)
 
-    # Allocate available accounts from the database.
+    # Allocate available accounts from database.
     def _allocate_accounts(self, count, reuse, hlvl):
         conditions = ((Account.allocated == 0) & (Account.fail == 0))
 
@@ -360,7 +334,6 @@ class AccountManager(object):
             # Allow high-level accounts to be allocated to scanning.
             conditions &= (Account.level < self.high_level)
 
-        accounts = {}
         try:
             query = (Account
                      .select()
@@ -369,7 +342,12 @@ class AccountManager(object):
                      .limit(min(250, count))
                      .dicts())
 
+            accounts = {}
             for dba in query:
+                # Update account object.
+                dba['allocated'] = True
+                dba['instance_id'] = self.instance_id
+                dba['last_modified'] = datetime.utcnow()
                 accounts[dba['username']] = dba
 
             if accounts:
@@ -382,21 +360,70 @@ class AccountManager(object):
 
                 unallocated = len(accounts) - allocated
                 if unallocated > 0:
-                    log.error('Unable to allocate %d accounts.', unallocated)
+                    log.warning('Failed to allocate %d accounts.', unallocated)
+
+                self._validate_accounts(accounts)
+                return accounts
 
         except Exception as e:
             log.exception('Error allocating accounts from database: %s', e)
 
-        return accounts
+        return {}
 
-    # Allocate and load accounts from the database.
-    def _fetch_accounts(self, count, hlvl):
+    # Filter accounts that are not correctly allocated to this instance.
+    def _validate_accounts(self, accounts):
+        query = (Account
+                 .select()
+                 .where(Account.username << accounts.keys())
+                 .dicts())
+
+        for dba in query:
+            username = dba['username']
+            if not dba['allocated']:
+                accounts.pop(username)
+                log.warning('Account %s is not allocated to this instance.',
+                            username)
+                time.sleep(0.5)
+            elif dba['instance_id'] != self.instance_id:
+                accounts.pop(username)
+                log.warning('Account %s is allocated to another instance.',
+                            username)
+                time.sleep(0.5)
+
+    # Allocate and load accounts from database.
+    def _fetch_accounts(self, count, hlvl, spare=True):
         accounts = {}
         if count > 0:
             accounts = self._allocate_accounts(count, True, hlvl)
             count -= len(accounts)
         if count > 0:
             accounts.update(self._allocate_accounts(count, False, hlvl))
+
+        if hlvl:
+            account_pool = 'high-level'
+        else:
+            account_pool = 'scanner'
+
+        accounts_lock = self.accounts_locks[account_pool]
+        allocated_pool = self.allocated[account_pool]
+        active_pool = self.active[account_pool]
+        spare_pool = self.accounts[account_pool]
+
+        # Store accounts in their respective account pool.
+        with accounts_lock:
+            for username, account in accounts.iteritems():
+                # XXX: Safety check, may be removed later.
+                if username in allocated_pool:
+                    log.error('Fetched %s account %s from database, but ' +
+                              'it was already allocated in this instance.',
+                              account_pool, username)
+
+                allocated_pool.add(username)
+                account['account_pool'] = account_pool
+                if spare:
+                    spare_pool[username] = account
+                else:
+                    active_pool[username] = account
 
         return accounts
 
@@ -410,7 +437,6 @@ class AccountManager(object):
             speed_limit = self.args.kph
 
         accounts_lock = self.accounts_locks[account_pool]
-        allocated_pool = self.allocated[account_pool]
         active_pool = self.active[account_pool]
         spare_pool = self.accounts[account_pool]
 
@@ -420,7 +446,7 @@ class AccountManager(object):
             last_scan_secs = 0
 
             # Loop through available spare accounts.
-            # Reversed iteration to maximize account reusage.
+            # Reversed iteration to maximize account re-usage.
             for username in reversed(spare_pool.keys()):
                 account = spare_pool[username]
 
@@ -445,38 +471,36 @@ class AccountManager(object):
             if picked_username:
                 picked_account = spare_pool.pop(picked_username)
 
-                log.info('Picked account %s from %s account pool. ',
-                         picked_username, account_pool)
+                log.info('Picked %s account %s from spare account pool.',
+                         account_pool, picked_username)
 
                 # Make sure account is not active.
-                if picked_username not in active_pool:
-                    picked_account['account_pool'] = account_pool
-                    active_pool[picked_username] = picked_account
-
-                    return picked_account
-
-            elif hlvl and not self.args.hlvl_workers:
-                working_count = (len(allocated_pool) -
-                                 self.replenish_count[account_pool])
-                if working_count >= self.args.hlvl_workers_max:
+                # XXX: Safety check, may be removed later.
+                if picked_username in active_pool:
+                    log.error('Picked %s account %s from spare pool, but ' +
+                              'it was already active in this instance.',
+                              account_pool, username)
                     return None
+                picked_account['account_pool'] = account_pool
+                active_pool[picked_username] = picked_account
 
-                # "On-the-fly" high-level account allocation.
-                accounts = self._fetch_accounts(1, hlvl=True)
-                if len(accounts) > 0:
-                    picked_username, picked_account = accounts.popitem()
+                return picked_account
 
-                    # Add account to allocated account pool.
-                    allocated_pool.add(picked_username)
-                    picked_account['allocated'] = True
-                    picked_account['instance_id'] = self.instance_id
-                    log.info('Allocated "on-the-fly" high-level account: %s.',
-                             picked_username)
+        if hlvl and not self.args.hlvl_workers:
+            available_count = len(active_pool) + len(spare_pool)
+            if available_count >= self.args.hlvl_workers_max:
+                return None
 
-                    picked_account['account_pool'] = account_pool
-                    active_pool[picked_username] = picked_account
+            # "On-the-fly" high-level account allocation.
+            accounts = self._fetch_accounts(1, hlvl=True, spare=False)
+            if len(accounts) < 1:
+                return None
 
-                    return picked_account
+            picked_username, picked_account = accounts.popitem()
+            log.info('Picked %s account %s "on-the-fly" from database.',
+                     account_pool, picked_username)
+
+            return picked_account
 
         return None
 
@@ -513,7 +537,8 @@ class AccountManager(object):
                 # Immediately release account from this instance.
                 account['allocated'] = False
                 allocated_pool.remove(username)
-                log.info('Released and deallocated account %s.', username)
+                log.info('Released %s account %s from this instance.',
+                         account_pool, username)
 
         # Update account information in database.
         self.dbq.put((Account, {0: Account.db_format(account)}))
@@ -527,13 +552,14 @@ class AccountManager(object):
 
         # Make sure account is active.
         if username not in active_pool:
-            log.error('Account %s failed but it was not active.', username)
+            log.error('Unable to find %s account %s in active account pool. ',
+                      active_pool, username)
         else:
-            active_pool.pop(username)
-            account['fail'] = True
-
             log.info('Moving active %s account %s to failed account pool.',
                      account_pool, username)
+
+            with accounts_lock:
+                active_pool.pop(username)
 
             if account['banned'] == AccountBanned.Shadowban:
                 reason = 'Shadow banned'
@@ -541,10 +567,9 @@ class AccountManager(object):
                 reason = 'Temporary ban'
             if account['banned'] == AccountBanned.Permanent:
                 reason = 'Permanent ban'
-            self.accounts['failed'].append((account, reason, False))
 
-            with accounts_lock:
-                self.replenish_count[account_pool] += 1
+            account['fail'] = True
+            self.accounts['failed'].append((account, reason, False))
 
         # Update account information in database.
         self.dbq.put((Account, {0: Account.db_format(account)}))
@@ -678,19 +703,17 @@ class AccountManager(object):
 
         # Make sure account is active.
         if username not in active_pool:
-            log.error('Account %s has encountered a captcha but it was ' +
-                      'not active.', username)
+            log.error('Unable to find %s account %s in active account pool. ',
+                      active_pool, username)
         else:
-            active_pool.pop(username)
-            account['fail'] = True
-
             log.info('Moving active %s account %s to captcha account pool.',
                      account_pool, username)
 
-            self.accounts['captcha'].append((account, status, captcha_url))
-
             with accounts_lock:
-                self.replenish_count[account_pool] += 1
+                active_pool.pop(username)
+
+            account['fail'] = True
+            self.accounts['captcha'].append((account, status, captcha_url))
 
         # Update account information in database.
         self.dbq.put((Account, {0: Account.db_format(account)}))
@@ -867,7 +890,6 @@ class AccountManager(object):
             accounts_lock = self.accounts_locks[account_pool]
             with accounts_lock:
                 self.accounts[account_pool][username] = account
-                self.replenish_count[account_pool] -= 1
 
         else:
             status['message'] = (
