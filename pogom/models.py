@@ -1134,7 +1134,7 @@ class ScannedLocation(LatLongModel):
 
 class MainWorker(BaseModel):
     instance_id = Utf8mb4CharField(primary_key=True, max_length=32)
-    worker_name = Utf8mb4CharField(max_length=50)
+    worker_name = Utf8mb4CharField(index=True, max_length=50)
     message = TextField(null=True, default="")
     method = Utf8mb4CharField(max_length=50)
     last_modified = DateTimeField(index=True)
@@ -1204,34 +1204,69 @@ class MainWorker(BaseModel):
 class WorkerStatus(LatLongModel):
     username = Utf8mb4CharField(primary_key=True, max_length=50)
     instance_id = Utf8mb4CharField(index=True, max_length=32)
+    message = Utf8mb4CharField(max_length=191)
     success = IntegerField()
     fail = IntegerField()
-    no_items = IntegerField()
     skip = IntegerField()
+    no_items = IntegerField()
+    no_rares = IntegerField()
     captcha = IntegerField()
-    norares = IntegerField()
-    last_modified = DateTimeField(index=True)
-    message = Utf8mb4CharField(max_length=191)
-    last_scan_date = DateTimeField(index=True)
     latitude = DoubleField(null=True)
     longitude = DoubleField(null=True)
+    last_scan = DateTimeField(null=True)
+    last_modified = DateTimeField(index=True)
 
     @staticmethod
     def db_format(status):
-        return {'username': status['username'],
-                'instance_id': status['instance_id'],
-                'success': status['success'],
-                'fail': status['fail'],
-                'no_items': status['noitems'],
-                'skip': status['skip'],
-                'captcha': status['captcha'],
-                'norares': status['norares'],
-                'last_modified': datetime.utcnow(),
-                'message': status['message'],
-                'last_scan_date': status.get('last_scan_date',
-                                             datetime.utcnow()),
-                'latitude': status.get('latitude', None),
-                'longitude': status.get('longitude', None)}
+        return {
+            'username': status['username'],
+            'instance_id': status['instance_id'],
+            'message': status['message'],
+            'success': status['success'],
+            'fail': status['fail'],
+            'skip': status['skip'],
+            'no_items': status['no_items'],
+            'no_rares': status['no_rares'],
+            'captcha': status['captcha'],
+            'latitude': status['latitude'],
+            'longitude': status['longitude'],
+            'last_scan': status['last_scan'],
+            'last_modified': datetime.utcnow()
+        }
+
+    @staticmethod
+    def default_status():
+        return {
+            'username': '',
+            'instance_id': args.instance_id,
+            'message': 'Initializing search worker...',
+            'success': 0,
+            'fail': 0,
+            'skip': 0,
+            'no_items': 0,
+            'no_rares': 0,
+            'captcha': 0,
+            'latitude': None,
+            'longitude': None,
+            'last_scan': None,
+            'last_modified': datetime.utcnow()
+        }
+
+    @staticmethod
+    def get_stats(username):
+        status = {}
+        with WorkerStatus.database().execution_context():
+            try:
+                query = (WorkerStatus
+                         .select(WorkerStatus.no_rares,
+                                 WorkerStatus.captcha)
+                         .where(WorkerStatus.username == username)
+                         .dicts())
+                status = query.get()
+            except WorkerStatus.DoesNotExist:
+                pass
+
+        return status
 
     @staticmethod
     def get_recent(age_minutes=30):
@@ -1250,17 +1285,6 @@ class WorkerStatus(LatLongModel):
             log.exception('Failed to retrieve worker status: %s.', e)
 
         return status
-
-    @staticmethod
-    def get_worker(username):
-        res = None
-        with WorkerStatus.database().execution_context():
-            try:
-                res = WorkerStatus.select().where(
-                    WorkerStatus.username == username).dicts().get()
-            except WorkerStatus.DoesNotExist:
-                pass
-        return res
 
 
 class SpawnPoint(LatLongModel):
@@ -2363,11 +2387,11 @@ def parse_map(args, map_dict, scan_coords, scan_location, db_update_queue,
 
         # Check if last scan had any rare Pokemon.
         if not rare_finds:
-            status['norares'] += 1
+            status['no_rares'] += 1
 
-            if status['norares'] > 20:
+            if status['no_rares'] > 20:
                 account['banned'] = AccountBanned.Shadowban
-            elif status['norares'] > 3:
+            elif status['no_rares'] > 3:
                 # Get nearby active Pokemon IDs from database.
                 active_pokemon_ids = Pokemon.get_nearby_pokemon_ids(
                     scan_coords, now_date + timedelta(seconds=10))
@@ -2378,7 +2402,7 @@ def parse_map(args, map_dict, scan_coords, scan_location, db_update_queue,
                         account['banned'] = AccountBanned.Shadowban
         else:
             # Reset status counter if rare Pokemon are present.
-            status['norares'] = 0
+            status['no_rares'] = 0
 
     log.info('Parsing found Pokemon: %d (%d filtered), nearby: %d, ' +
              'pokestops: %d, gyms: %d, raids: %d.',

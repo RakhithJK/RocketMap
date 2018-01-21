@@ -75,7 +75,7 @@ def level_up_account(args, location, accounts, errors):
                 'message': 'Creating thread...',
                 'success': 0,
                 'fail': 0,
-                'noitems': 0,
+                'no_items': 0,
                 'skip': 0,
                 'captcha': 0,
                 'username': '',

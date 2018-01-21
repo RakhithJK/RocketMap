@@ -81,10 +81,10 @@ function addWorker(mainWorkerHash, workerHash) {
        <div id="username_${workerHash}" class="status_cell"/>
        <div id="success_${workerHash}"  class="status_cell"/>
        <div id="fail_${workerHash}"     class="status_cell"/>
-       <div id="no_items_${workerHash}"  class="status_cell"/>
        <div id="skip_${workerHash}"     class="status_cell"/>
+       <div id="no_items_${workerHash}" class="status_cell"/>
+       <div id="no_rares_${workerHash}" class="status_cell"/>
        <div id="captchas_${workerHash}" class="status_cell"/>
-       <div id="norares_${workerHash}" class="status_cell"/>
        <div id="lastmod_${workerHash}"  class="status_cell"/>
        <div id="message_${workerHash}"  class="status_cell"/>
      </div>
@@ -131,10 +131,10 @@ function processWorker(i, worker) {
     $('#username_' + hash).html(worker['username'])
     $('#success_' + hash).html(worker['success'])
     $('#fail_' + hash).html(worker['fail'])
-    $('#no_items_' + hash).html(worker['no_items'])
     $('#skip_' + hash).html(worker['skip'])
+    $('#no_items_' + hash).html(worker['no_items'])
+    $('#no_rares_' + hash).html(worker['no_rares'])
     $('#captchas_' + hash).html(worker['captcha'])
-    $('#norares_' + hash).html(worker['norares'])
     $('#lastmod_' + hash).html(lastModified)
     $('#message_' + hash).html(worker['message'])
 }
@@ -266,16 +266,16 @@ function addTable(hash) {
            Fail
          </div>
          <div class="status_cell">
-           No Items
-         </div>
-         <div class="status_cell">
            Skipped
          </div>
          <div class="status_cell">
-           Captchas
+           No Items
          </div>
          <div class="status_cell">
            No Rares
+         </div>
+         <div class="status_cell">
+           Captchas
          </div>
          <div class="status_cell">
            Last Modified

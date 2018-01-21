@@ -361,8 +361,8 @@ class AccountManager(object):
                 unallocated = len(accounts) - allocated
                 if unallocated > 0:
                     log.warning('Failed to allocate %d accounts.', unallocated)
+                    self._validate_accounts(accounts)
 
-                self._validate_accounts(accounts)
                 return accounts
 
         except Exception as e:
@@ -381,14 +381,12 @@ class AccountManager(object):
             username = dba['username']
             if not dba['allocated']:
                 accounts.pop(username)
-                log.warning('Account %s is not allocated to this instance.',
-                            username)
-                time.sleep(0.5)
+                log.debug('Account %s was not allocated to this instance.',
+                          username)
             elif dba['instance_id'] != self.instance_id:
                 accounts.pop(username)
-                log.warning('Account %s is allocated to another instance.',
-                            username)
-                time.sleep(0.5)
+                log.debug('Account %s was allocated to another instance.',
+                          username)
 
     # Allocate and load accounts from database.
     def _fetch_accounts(self, count, hlvl, spare=True):
@@ -412,12 +410,6 @@ class AccountManager(object):
         # Store accounts in their respective account pool.
         with accounts_lock:
             for username, account in accounts.iteritems():
-                # XXX: Safety check, may be removed later.
-                if username in allocated_pool:
-                    log.error('Fetched %s account %s from database, but ' +
-                              'it was already allocated in this instance.',
-                              account_pool, username)
-
                 allocated_pool.add(username)
                 account['account_pool'] = account_pool
                 if spare:
@@ -474,13 +466,6 @@ class AccountManager(object):
                 log.info('Picked %s account %s from spare account pool.',
                          account_pool, picked_username)
 
-                # Make sure account is not active.
-                # XXX: Safety check, may be removed later.
-                if picked_username in active_pool:
-                    log.error('Picked %s account %s from spare pool, but ' +
-                              'it was already active in this instance.',
-                              account_pool, username)
-                    return None
                 picked_account['account_pool'] = account_pool
                 active_pool[picked_username] = picked_account
 
@@ -593,7 +578,7 @@ class AccountManager(object):
             status['message'] = (
                 'Account {} is shadow banned: {} scans without ' +
                 'rare Pokemon. Switching accounts...').format(
-                    account['username'], status['norares'])
+                    account['username'], status['no_rares'])
             log.warning(status['message'])
             self.failed_account(account, 'shadowban')
             return False

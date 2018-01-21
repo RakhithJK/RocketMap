@@ -171,13 +171,13 @@ def status_printer(threadStatus, account_manager, logmode, hash_key,
             # How pretty.
             status = (
                 '{:10} | {:5} | {:' + str(userlen) + '} | {:' + str(proxylen) +
-                '} | {:7} | {:6} | {:5} | {:7} | {:8} | {:8} | {:10}')
+                '} | {:7} | {:6} | {:7} | {:5} | {:6} | {:7} | {:10}')
 
             # Print the worker status.
             status_text.append(status.format('Worker ID', 'Start', 'User',
                                              'Proxy', 'Success', 'Failed',
-                                             'Empty', 'Skipped', 'Captchas',
-                                             'No-Rares', 'Message'))
+                                             'Skipped', 'Empty', 'Shadow',
+                                             'Captcha', 'Message'))
             for item in sorted(threadStatus):
                 if(threadStatus[item]['type'] == 'Worker'):
                     current_line += 1
@@ -197,10 +197,10 @@ def status_printer(threadStatus, account_manager, logmode, hash_key,
                         threadStatus[item]['proxy_display'],
                         threadStatus[item]['success'],
                         threadStatus[item]['fail'],
-                        threadStatus[item]['noitems'],
                         threadStatus[item]['skip'],
+                        threadStatus[item]['no_items'],
+                        threadStatus[item]['no_rares'],
                         threadStatus[item]['captcha'],
-                        threadStatus[item]['norares'],
                         threadStatus[item]['message']))
 
         elif display_type[0] == 'failedaccounts':
@@ -392,25 +392,19 @@ def search_overseer_thread(args, account_manager, new_location_queue,
             scheduler_array.append(scheduler)
             search_items_queue_array.append(search_items_queue)
 
-        # Set proxy for each worker, using round robin.
-        proxy_display = 'No'
-        proxy_url = False    # Will be assigned inside a search thread.
-
+        # Create a WorkerStatus for each search worker thread.
         workerId = 'Worker {:03}'.format(i)
-        threadStatus[workerId] = {
-            'instance_id': args.instance_id,
+        threadStatus[workerId] = WorkerStatus.default_status()
+
+        # Update local runtime information.
+        threadStatus[workerId].update({
             'type': 'Worker',
-            'message': 'Creating thread...',
-            'success': 0,
-            'fail': 0,
-            'noitems': 0,
-            'skip': 0,
-            'captcha': 0,
-            'norares': 0,
-            'username': '',
-            'proxy_display': proxy_display,
-            'proxy_url': proxy_url,
-        }
+            'active': False,
+            # Proxy will be assigned (if enabled) inside search worker thread.
+            'proxy_display': 'No',
+            'proxy_url': False
+        })
+
         argset = (
             args, account_manager, control_flags, threadStatus[workerId],
             db_updates_queue, wh_queue, scheduler, key_scheduler, gym_cache)
@@ -645,14 +639,14 @@ def update_total_stats(threadStatus, last_account_status):
             overseer['captcha_total'] += stat_delta(tstatus, last_status,
                                                     'captcha')
             overseer['empty_total'] += stat_delta(tstatus, last_status,
-                                                  'noitems')
+                                                  'no_items')
             overseer['fail_total'] += stat_delta(tstatus, last_status, 'fail')
             overseer['success_total'] += stat_delta(tstatus, last_status,
                                                     'success')
             last_account_status[username] = {
                 'skip': tstatus['skip'],
                 'captcha': tstatus['captcha'],
-                'noitems': tstatus['noitems'],
+                'no_items': tstatus['no_items'],
                 'fail': tstatus['fail'],
                 'success': tstatus['success']
             }
@@ -766,35 +760,21 @@ def search_worker_thread(args, account_manager, control_flags, status,
                 continue
 
             # Reset account statistics tracked per loop.
-            prevStatus = WorkerStatus.get_worker(account['username'])
-            if prevStatus:
-                status.update(prevStatus)
-            else:
-                status.update({
-                    'username': account['username'],
-                    'last_modified': account['last_modified'],
-                    'last_scan_date': account['last_modified'],
-                    'latitude': None,
-                    'longitude': None
-                })
-                # Include information from last scan if available.
-                if account['last_scan']:
-                    status.update({
-                        'last_scan_date': account['last_scan'],
-                        'latitude': account['latitude'],
-                        'longitude': account['longitude']
-                    })
-            # New lease of life right here.
+            status.update(WorkerStatus.default_status())
+
+            # Retrieve useful information from past worker status.
+            status.update(WorkerStatus.get_stats(account['username']))
+
+            # Update status with current account information.
             status.update({
-                'fail': 0,
-                'success': 0,
-                'noitems': 0,
-                'skip': 0,
-                'captcha': 0,
-                'norares': 0,
-                'active': True,
+                'username': account['username'],
                 'message':
-                    'Switching to account {}.'.format(account['username'])
+                    'Switching to account {}.'.format(account['username']),
+                'last_modified': account['last_modified'],
+                'last_scan': account['last_scan'],
+                'latitude': account['latitude'],
+                'longitude': account['longitude'],
+                'active': True
             })
 
             log.info(status['message'])
@@ -882,7 +862,7 @@ def search_worker_thread(args, account_manager, control_flags, status,
 
                 # Using step as a flag for no valid next location returned.
                 if step == -1:
-                    time.sleep(scheduler.delay(status['last_scan_date']))
+                    time.sleep(scheduler.delay(status['last_scan']))
                     continue
 
                 # get the ScannedLocation before jittering
@@ -952,7 +932,7 @@ def search_worker_thread(args, account_manager, control_flags, status,
                 # GMO: Make the actual request.
                 scan_date = datetime.utcnow()
                 response_dict = gmo(api, account, scan_coords)
-                status['last_scan_date'] = datetime.utcnow()
+                status['last_scan'] = datetime.utcnow()
 
                 # Record the time and the place that the worker made the
                 # request.
@@ -971,7 +951,7 @@ def search_worker_thread(args, account_manager, control_flags, status,
                     consecutive_fails += 1
                     status['message'] = messages['invalid']
                     log.error(status['message'])
-                    time.sleep(scheduler.delay(status['last_scan_date']))
+                    time.sleep(scheduler.delay(status['last_scan']))
                     continue
 
                 # Check for reCaptcha.
@@ -994,31 +974,32 @@ def search_worker_thread(args, account_manager, control_flags, status,
                                        scan_date, account, account_manager)
 
                     scheduler.task_done(status, parsed)
-                    if parsed['count'] > 0:
+                    finds = parsed['count']
+                    if finds > 0:
                         status['success'] += 1
                         consecutive_noitems = 0
                     else:
-                        status['noitems'] += 1
+                        status['no_items'] += 1
                         consecutive_noitems += 1
+
                     consecutive_fails = 0
-                    status['message'] = ('Search at {:6f},{:6f} completed ' +
-                                         'with {} finds.').format(
-                        scan_coords[0], scan_coords[1],
-                        parsed['count'])
+                    status['message'] = (
+                        'Search at {:6f},{:6f} - step {}, ' +
+                        'completed with {} finds.').format(
+                            scan_coords[0], scan_coords[1], step, finds)
                     log.debug(status['message'])
                 except Exception as e:
                     parsed = False
                     status['fail'] += 1
                     consecutive_fails += 1
-                    # consecutive_noitems = 0 - I propose to leave noitems
-                    # counter in case of error.
-                    status['message'] = ('Map parse failed at {:6f},{:6f}, ' +
-                                         'abandoning location. {} may be ' +
-                                         'banned.').format(scan_coords[0],
-                                                           scan_coords[1],
-                                                           account['username'])
-                    log.exception('{}. Exception message: {}'.format(
-                        status['message'], repr(e)))
+                    # Leave consecutive_noitems counter in case of error.
+                    # consecutive_noitems = 0
+                    status['message'] = (
+                        'Map parse failed at {:6f},{:6f} - step {}. ' +
+                        'Abandoning location.').format(
+                            scan_coords[0], scan_coords[1], step)
+                    log.exception('%s Exception: %s', status['message'], e)
+
                 finally:
                     if response_dict is not None:
                         del response_dict
@@ -1166,7 +1147,7 @@ def search_worker_thread(args, account_manager, control_flags, status,
                     break
 
                 # Delay the desired amount after "scan" completion.
-                delay = scheduler.delay(status['last_scan_date'])
+                delay = scheduler.delay(status['last_scan'])
 
                 status['message'] += ' Sleeping {}s until {}.'.format(
                     delay,
