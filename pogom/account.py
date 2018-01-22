@@ -78,7 +78,6 @@ def setup_api(args, status, account):
 
 # Use API to check the login status, and retry the login if possible.
 def check_login(args, account, api, proxy_url):
-    login_attempts = account.get('login_attempts', 0)
     # Logged in? Enough time left? Cool!
     if api._auth_provider and api._auth_provider._access_token:
         remaining_time = api._auth_provider._access_token_expiry - time.time()
@@ -120,17 +119,17 @@ def check_login(args, account, api, proxy_url):
     if num_tries > args.login_retries:
         log.error('Failed %d times to login to Pokemon Go with account %s.',
                   num_tries, account['username'])
-        account['login_attempts'] = login_attempts + 1
-        if account['login_attempts'] < 5:
+        account['failed'] += 1
+        if account['failed'] < args.account_max_failures:
             raise TooManyLoginAttempts('Exceeded login attempts.')
         else:
             message = 'Account has a permanent ban: {} failed logins.'.format(
-                args.login_retries * 5)
+                args.login_retries * args.account_max_failures)
             log.error(message)
             account['banned'] = AccountBanned.Permanent
             raise AccountBannedException(message)
 
-    account['login_attempts'] = 0
+    account['failed'] = 0
     time.sleep(random.uniform(2, 4))
 
     # Simulate login sequence.

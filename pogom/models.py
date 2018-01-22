@@ -115,8 +115,8 @@ class Account(LatLongModel):
     allocated = BooleanField(index=True, default=False)
     latitude = DoubleField(null=True)
     longitude = DoubleField(null=True)
+    failed = SmallIntegerField(index=True, default=0)
     captcha = BooleanField(index=True, default=False)
-    fail = BooleanField(index=True, default=False)
     warning = BooleanField(index=True, default=False)
     banned = SmallIntegerField(index=True, default=AccountBanned.Clear)
     level = SmallIntegerField(index=True, default=0)
@@ -134,8 +134,8 @@ class Account(LatLongModel):
             'allocated': account.get('allocated', False),
             'latitude': account.get('latitude', None),
             'longitude': account.get('longitude', None),
+            'failed': account.get('failed', 0),
             'captcha': account.get('captcha', False),
-            'fail': account.get('fail', False),
             'warning': account.get('warning', False),
             'banned': account.get('banned', AccountBanned.Clear),
             'level': account['level'],

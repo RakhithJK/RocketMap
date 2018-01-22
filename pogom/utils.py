@@ -78,6 +78,10 @@ def get_args():
                         default=120,
                         help=('Keep excess high-level accounts allocated ' +
                               'for at least X seconds. 0 to disable.'))
+    parser.add_argument('-amf', '--account-max-failures', type=int,
+                        default=5,
+                        help=('Consecutive login failures required to ' +
+                              'flag the account as permanently banned.'))
     parser.add_argument('-asi', '--account-search-interval', type=int,
                         default=0,
                         help=('Seconds for accounts to search before ' +
@@ -616,6 +620,14 @@ def get_args():
         if args.workers is None:
             errors.append(
                 'Missing `workers` either as -w/--workers or in config.')
+
+        # Ban detection is important to avoid clogging up spare account pools.
+        # AccountManager tries to re-use accounts when possible, failing/banned
+        # accounts will continue to be allocated instead of valid accounts.
+        if args.account_max_failures <= 0 or args.account_max_failures > 100:
+            errors.append(
+                'Do not disable permanent ban detection. -amf/' +
+                '--account-max-failures must be set to a reasonable value.')
 
         if len(errors) > 0:
             parser.print_usage()

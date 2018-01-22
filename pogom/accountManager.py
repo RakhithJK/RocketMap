@@ -236,13 +236,12 @@ class AccountManager(object):
                     self.replenish_count[account_pool] -= 1
 
             # Update account information in database.
-            account['fail'] = False
             self.dbq.put((Account, {0: Account.db_format(account)}))
 
     def _account_monitor(self):
         # Reset allocated accounts after one day.
         query = (Account
-                 .update(allocated=False, fail=False)
+                 .update(allocated=False)
                  .where((Account.last_modified <
                          (datetime.utcnow() - timedelta(days=1))))
                  .execute())
@@ -250,7 +249,7 @@ class AccountManager(object):
 
         # Reset warning after one week.
         query = (Account
-                 .update(allocated=False, warning=False)
+                 .update(allocated=False, failed=0, warning=False)
                  .where((Account.warning == 1) &
                         (Account.last_modified <
                          (datetime.utcnow() - timedelta(weeks=1))))
@@ -259,7 +258,7 @@ class AccountManager(object):
 
         # Reset shadow banned accounts after two weeks.
         query = (Account
-                 .update(allocated=False, banned=AccountBanned.Clear)
+                 .update(allocated=False, failed=0, banned=AccountBanned.Clear)
                  .where((Account.banned == AccountBanned.Shadowban) &
                         (Account.last_modified <
                          (datetime.utcnow() - timedelta(weeks=2))))
@@ -268,7 +267,7 @@ class AccountManager(object):
 
         # Reset temporarily banned accounts after six weeks.
         query = (Account
-                 .update(allocated=False, banned=AccountBanned.Clear)
+                 .update(allocated=False, failed=0, banned=AccountBanned.Clear)
                  .where((Account.banned == AccountBanned.Temporary) &
                         (Account.last_modified <
                          (datetime.utcnow() - timedelta(weeks=6))))
@@ -309,7 +308,7 @@ class AccountManager(object):
     # Release accounts previously used by this instance.
     def _release_instance(self):
         query = (Account
-                 .update(allocated=False, fail=False)
+                 .update(allocated=False)
                  .where(Account.instance_id == self.instance_id))
         rows = query.execute()
         log.debug('Released %d accounts previously used by this instance.',
@@ -317,7 +316,7 @@ class AccountManager(object):
 
     # Allocate available accounts from database.
     def _allocate_accounts(self, count, reuse, hlvl):
-        conditions = ((Account.allocated == 0) & (Account.fail == 0))
+        conditions = (Account.allocated == 0)
 
         if self.args.no_pokemon or self.args.shadow_ban_scan:
             conditions &= (Account.banned <= AccountBanned.Shadowban)
@@ -472,8 +471,11 @@ class AccountManager(object):
                 return picked_account
 
         if hlvl and not self.args.hlvl_workers:
+            # Check if we're not allocating too many accounts.
             available_count = len(active_pool) + len(spare_pool)
             if available_count >= self.args.hlvl_workers_max:
+                log.debug('Reached %s allocation limit of %d accounts.',
+                          account_pool, self.args.hlvl_workers_max)
                 return None
 
             # "On-the-fly" high-level account allocation.
@@ -553,7 +555,6 @@ class AccountManager(object):
             if account['banned'] == AccountBanned.Permanent:
                 reason = 'Permanent ban'
 
-            account['fail'] = True
             self.accounts['failed'].append((account, reason, False))
 
         # Update account information in database.
@@ -583,6 +584,7 @@ class AccountManager(object):
             self.failed_account(account, 'shadowban')
             return False
 
+        # Update account information in database.
         self.dbq.put((Account, {0: Account.db_format(account)}))
         return True
 
@@ -593,7 +595,10 @@ class AccountManager(object):
         # Default result: no captcha, no failure.
         result = {'found': False, 'failed': False}
 
-        if response and 'CHECK_CHALLENGE' not in response.get('responses', {}):
+        if not response:
+            return result
+
+        if 'CHECK_CHALLENGE' not in response.get('responses', {}):
             return result
 
         captcha_url = response['responses']['CHECK_CHALLENGE'].challenge_url
@@ -697,7 +702,6 @@ class AccountManager(object):
             with accounts_lock:
                 active_pool.pop(username)
 
-            account['fail'] = True
             self.accounts['captcha'].append((account, status, captcha_url))
 
         # Update account information in database.
