@@ -28,11 +28,6 @@ class AccountManager(object):
         self.high_level = high_level
         self.instance_id = args.instance_id
 
-        self.replenish_count = {
-            'scanner': args.workers,
-            'high-level': args.hlvl_workers
-        }
-
         self.allocated = {
             'scanner': set(),
             'high-level': set()
@@ -89,12 +84,16 @@ class AccountManager(object):
                   'Managing %d scanner and %d high-level accounts.',
                   len(self.allocated['scanner']),
                   len(self.allocated['high-level']))
+        try:
+            self._replenish_accounts(False, notice)
+            self._replenish_accounts(True, notice)
 
-        self._replenish_accounts(False, notice)
-        self._replenish_accounts(True, notice)
-
-        self._release_accounts(False)
-        self._release_accounts(True)
+            self._release_accounts(False)
+            self._release_accounts(True)
+        except KeyError as e:
+            log.exception('Account manager lost track of an account: %s.', e)
+        except Exception as e:
+            log.exception('Account keeper critical fail: %s.', e)
 
     def _replenish_accounts(self, hlvl, notice):
         if hlvl:
@@ -137,14 +136,14 @@ class AccountManager(object):
         active_pool = self.active[account_pool]
         spare_pool = self.accounts[account_pool]
 
-        available_count = (len(active_pool) + len(spare_pool))
-        excess_count = available_count - target_count
-
-        if excess_count <= 0:
-            return
-
         released_accounts = {}
         with accounts_lock:
+            available_count = (len(active_pool) + len(spare_pool))
+            excess_count = available_count - target_count
+
+            if excess_count <= 0:
+                return
+
             for username in spare_pool.keys():
                 account = spare_pool[username]
                 hold_time = (datetime.utcnow() -
@@ -185,7 +184,7 @@ class AccountManager(object):
         else:
             ban_level = AccountBanned.Shadowban
 
-        # Search through failed account pool for recyclable accounts.
+        # Search through failed pool for recyclable accounts.
         while failed_count > 0:
             account, reason, notified = self.accounts['failed'].popleft()
             failed_count -= 1
@@ -233,7 +232,6 @@ class AccountManager(object):
 
                 with accounts_lock:
                     spare_pool[account['username']] = account
-                    self.replenish_count[account_pool] -= 1
 
             # Update account information in database.
             self.dbq.put((Account, {0: Account.db_format(account)}))
@@ -307,17 +305,23 @@ class AccountManager(object):
 
     # Release accounts previously used by this instance.
     def _release_instance(self):
-        query = (Account
-                 .update(allocated=False)
-                 .where(Account.instance_id == self.instance_id))
-        rows = query.execute()
+        rows = 0
+        try:
+            with Account.database().execution_context():
+                query = (Account
+                         .update(allocated=False)
+                         .where(Account.instance_id == self.instance_id))
+                rows = query.execute()
+        except Exception as e:
+            log.exception('Error releasing accounts previously used: %s.', e)
+
         log.debug('Released %d accounts previously used by this instance.',
                   rows)
 
     # Allocate available accounts from database.
     def _allocate_accounts(self, count, reuse, hlvl):
+        # Build query conditions to select valid and usable accounts.
         conditions = (Account.allocated == 0)
-
         if self.args.no_pokemon or self.args.shadow_ban_scan:
             conditions &= (Account.banned <= AccountBanned.Shadowban)
         else:
@@ -330,62 +334,47 @@ class AccountManager(object):
         if hlvl:
             conditions &= (Account.level >= self.high_level)
         elif not self.args.hlvl_scan:
-            # Allow high-level accounts to be allocated to scanning.
+            # Allow high-level accounts to be allocated for scanning.
             conditions &= (Account.level < self.high_level)
 
         try:
-            query = (Account
-                     .select()
-                     .where(conditions)
-                     .order_by(Account.last_modified.desc())
-                     .limit(min(250, count))
-                     .dicts())
-
-            accounts = {}
-            for dba in query:
-                # Update account object.
-                dba['allocated'] = True
-                dba['instance_id'] = self.instance_id
-                dba['last_modified'] = datetime.utcnow()
-                accounts[dba['username']] = dba
-
-            if accounts:
+            with Account.database().execution_context():
                 query = (Account
-                         .update(allocated=True,
-                                 instance_id=self.instance_id)
-                         .where((Account.allocated == 0) &
-                                (Account.username << accounts.keys())))
-                allocated = query.execute()
+                         .select()
+                         .where(conditions)
+                         .order_by(Account.last_modified.desc())
+                         .limit(min(250, count))
+                         .dicts())
+
+                accounts = {}
+                for dba in query:
+                    # Update account object.
+                    dba['allocated'] = True
+                    dba['instance_id'] = self.instance_id
+                    dba['last_modified'] = datetime.utcnow()
+                    accounts[dba['username']] = dba
+
+                allocated = 0
+                if accounts:
+                    # Update selected accounts as allocated to this instance.
+                    query = (Account
+                             .update(allocated=True,
+                                     instance_id=self.instance_id)
+                             .where((Account.allocated == 0) &
+                                    (Account.username << accounts.keys())))
+                    allocated = query.execute()
 
                 unallocated = len(accounts) - allocated
                 if unallocated > 0:
-                    log.warning('Failed to allocate %d accounts.', unallocated)
-                    self._validate_accounts(accounts)
-
-                return accounts
+                    log.error('Failed to allocate %d accounts.', unallocated)
+                else:
+                    # Return valid and allocated accounts.
+                    return accounts
 
         except Exception as e:
-            log.exception('Error allocating accounts from database: %s', e)
+            log.exception('Error allocating accounts from database: %s.', e)
 
         return {}
-
-    # Filter accounts that are not correctly allocated to this instance.
-    def _validate_accounts(self, accounts):
-        query = (Account
-                 .select()
-                 .where(Account.username << accounts.keys())
-                 .dicts())
-
-        for dba in query:
-            username = dba['username']
-            if not dba['allocated']:
-                accounts.pop(username)
-                log.debug('Account %s was not allocated to this instance.',
-                          username)
-            elif dba['instance_id'] != self.instance_id:
-                accounts.pop(username)
-                log.debug('Account %s was allocated to another instance.',
-                          username)
 
     # Allocate and load accounts from database.
     def _fetch_accounts(self, count, hlvl, spare=True):
@@ -409,6 +398,11 @@ class AccountManager(object):
         # Store accounts in their respective account pool.
         with accounts_lock:
             for username, account in accounts.iteritems():
+                # Satefy check, better be sure than sorry.
+                if username in allocated_pool:
+                    log.warning('Fetched %s account %s was already allocated.',
+                                account_pool, username)
+                    continue
                 allocated_pool.add(username)
                 account['account_pool'] = account_pool
                 if spare:
@@ -530,32 +524,31 @@ class AccountManager(object):
         # Update account information in database.
         self.dbq.put((Account, {0: Account.db_format(account)}))
 
-    # Move account from active to failed account pool.
+    # Move account from active to failed pool.
     def failed_account(self, account, reason):
         username = account['username']
         account_pool = account['account_pool']
         accounts_lock = self.accounts_locks[account_pool]
         active_pool = self.active[account_pool]
 
-        # Make sure account is active.
-        if username not in active_pool:
-            log.error('Unable to find %s account %s in active account pool. ',
-                      active_pool, username)
-        else:
-            log.info('Moving active %s account %s to failed account pool.',
-                     account_pool, username)
+        with accounts_lock:
+            # Make sure account is active.
+            if username not in active_pool:
+                log.error('Unable to find %s account %s in active pool.',
+                          active_pool, username)
+            else:
+                log.info('Moving active %s account %s to failed pool.',
+                         account_pool, username)
 
-            with accounts_lock:
                 active_pool.pop(username)
+                if account['banned'] == AccountBanned.Shadowban:
+                    reason = 'Shadow banned'
+                if account['banned'] == AccountBanned.Temporary:
+                    reason = 'Temporary ban'
+                if account['banned'] == AccountBanned.Permanent:
+                    reason = 'Permanent ban'
 
-            if account['banned'] == AccountBanned.Shadowban:
-                reason = 'Shadow banned'
-            if account['banned'] == AccountBanned.Temporary:
-                reason = 'Temporary ban'
-            if account['banned'] == AccountBanned.Permanent:
-                reason = 'Permanent ban'
-
-            self.accounts['failed'].append((account, reason, False))
+                self.accounts['failed'].append((account, reason, False))
 
         # Update account information in database.
         self.dbq.put((Account, {0: Account.db_format(account)}))
@@ -691,18 +684,17 @@ class AccountManager(object):
         accounts_lock = self.accounts_locks[account_pool]
         active_pool = self.active[account_pool]
 
-        # Make sure account is active.
-        if username not in active_pool:
-            log.error('Unable to find %s account %s in active account pool. ',
-                      active_pool, username)
-        else:
-            log.info('Moving active %s account %s to captcha account pool.',
-                     account_pool, username)
+        with accounts_lock:
+            # Make sure account is active.
+            if username not in active_pool:
+                log.error('Unable to find %s account %s in active pool. ',
+                          active_pool, username)
+            else:
+                log.info('Moving active %s account %s to captcha pool.',
+                         account_pool, username)
 
-            with accounts_lock:
                 active_pool.pop(username)
-
-            self.accounts['captcha'].append((account, status, captcha_url))
+                self.accounts['captcha'].append((account, status, captcha_url))
 
         # Update account information in database.
         self.dbq.put((Account, {0: Account.db_format(account)}))
