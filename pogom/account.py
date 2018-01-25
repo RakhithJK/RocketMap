@@ -538,16 +538,19 @@ def spin_pokestop(account_manager, status, api, account, fort):
             # Note: Account was removed from rotation.
             return False
         elif captcha['found']:
-            # Make another fort search request for the same location
-            # since the previous one was captcha'd.
+            # Make another fort search request.
             response = fort_search(api, account, fort, location)
+
+        if not response or 'FORT_SEARCH' not in response['responses']:
+            log.error('Failed to spin a Pokestop.')
+            return False
 
         spin_result = response['responses']['FORT_SEARCH'].result
         if spin_result == 1:
             log.info('Successful Pokestop spin with %s.', account['username'])
             # Update account stats and clear inventory if necessary.
             parse_level_up_rewards(api, account)
-            clear_inventory(api, account)
+            clear_inventory(account_manager, status, api, account)
             account['session_spins'] += 1
             incubate_eggs(api, account)
             return True
@@ -557,13 +560,12 @@ def spin_pokestop(account_manager, status, api, account, fort):
             log.debug('Failed to spin Pokestop. Has recently been spun.')
         elif spin_result == 4:
             log.debug('Failed to spin Pokestop. Inventory is full.')
-            clear_inventory(api, account)
+            clear_inventory(account_manager, status, api, account)
         elif spin_result == 5:
             log.debug('Maximum number of Pokestops spun for this day.')
         else:
-            log.debug(
-                'Failed to spin a Pokestop. Unknown result %d.',
-                spin_result)
+            log.error('Failed to spin a Pokestop. Unknown result %d.',
+                      spin_result)
 
     return False
 
@@ -577,7 +579,7 @@ def parse_get_player(account, api_response):
         account['buddy'] = player_data.buddy_pokemon.id
 
 
-def clear_inventory(api, account):
+def clear_inventory(account_manager, status, api, account):
     items = [(1, 'Pokeball'), (2, 'Greatball'), (3, 'Ultraball'),
              (101, 'Potion'), (102, 'Super Potion'), (103, 'Hyper Potion'),
              (104, 'Max Potion'),
@@ -594,24 +596,31 @@ def clear_inventory(api, account):
             release_ids.remove(account['buddy'])
         # Don't let Niantic throttle.
         time.sleep(random.uniform(2, 4))
-        release_p_response = release_pokemon(api, account, 0, release_ids)
+        response = release_pokemon(api, account, 0, release_ids)
 
-        if 'CHECK_CHALLENGE' in release_p_response['responses']:
-            captcha_url = release_p_response[
-                'responses']['CHECK_CHALLENGE'].challenge_url
-            if len(captcha_url) > 1:
-                log.info('Account encountered a reCaptcha.')
-                return False
+        # Check for reCaptcha.
+        captcha = account_manager.handle_captcha(
+            account, status, api, response)
+        if captcha['found'] and captcha['failed']:
+            # Note: Account was removed from rotation.
+            return False
+        elif captcha['found']:
+            # Make another release pokemon request.
+            response = release_pokemon(api, account, 0, release_ids)
 
-        release_response = release_p_response['responses']['RELEASE_POKEMON']
-        release_result = release_response.result
+        if not response or 'RELEASE_POKEMON' not in response['responses']:
+            log.error('Failed to release Pokemon.')
+            return False
+
+        release_result = response['responses']['RELEASE_POKEMON'].result
 
         if release_result == 1:
             log.info('Sucessfully Released %s Pokemon', len(release_ids))
             for p_id in release_ids:
                 account['pokemons'].pop(p_id, None)
         else:
-            log.error('Failed to release Pokemon.')
+            log.error('Failed to release Pokemon. Unknown result %d.',
+                      release_result)
 
     for item_id, item_name in items:
         item_count = account['items'].get(item_id, 0)
@@ -623,26 +632,31 @@ def clear_inventory(api, account):
             time.sleep(random.uniform(2, 4))
             resp = recycle_inventory_item(api, account, item_id, drop_count)
 
-            if 'CHECK_CHALLENGE' in resp['responses']:
-                captcha_url = resp[
-                    'responses']['CHECK_CHALLENGE'].challenge_url
-                if len(captcha_url) > 1:
-                    log.info('Account encountered a reCaptcha.')
-                    return False
+            # Check for reCaptcha.
+            captcha = account_manager.handle_captcha(
+                account, status, api, resp)
+            if captcha['found'] and captcha['failed']:
+                # Note: Account was removed from rotation.
+                return False
+            elif captcha['found']:
+                # Make another release inventory item request.
+                resp = recycle_inventory_item(
+                    api, account, item_id, drop_count)
 
-            clear_response = resp['responses']['RECYCLE_INVENTORY_ITEM']
-            clear_result = clear_response.result
+            if not resp or 'RECYCLE_INVENTORY_ITEM' not in resp['responses']:
+                log.error('Failed to clear inventory items.')
+                return False
+
+            clear_result = resp['responses']['RECYCLE_INVENTORY_ITEM'].result
             if clear_result == 1:
-                log.info('Clearing %s %ss succeeded.', drop_count,
-                         item_name)
+                log.info('Clearing %s %ss succeeded.', drop_count, item_name)
             elif clear_result == 2:
                 log.debug('Not enough items to clear, parsing failed.')
             elif clear_result == 3:
                 log.debug('Tried to recycle incubator, parsing failed.')
             else:
-                log.warning('Failed to clear inventory.')
-
-            log.debug('Recycled inventory: \n\r{}'.format(clear_result))
+                log.error('Failed to clear inventory. Unknown result %d.',
+                          clear_result)
 
     return
 

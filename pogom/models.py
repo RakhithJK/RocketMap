@@ -2598,34 +2598,29 @@ def encounter_pokemon(args, account_manager, status, api, account, pokemon):
                 time.sleep(args.encounter_delay)
 
             # Encounter Pokémon.
-            encounter_result = encounter(
+            response = encounter(
                 hlvl_api, hlvl_account, pokemon.encounter_id,
                 pokemon.spawn_point_id, scan_location)
 
-            # Handle errors.
-            if not encounter_result:
-                continue
-
             # Check for reCaptcha.
             captcha = account_manager.handle_captcha(
-                    hlvl_account, status, hlvl_api, encounter_result)
+                    hlvl_account, status, hlvl_api, response)
             if captcha['found'] and captcha['failed']:
                 # Note: Account was removed from rotation.
                 break
             elif captcha['found']:
                 # Make another encounter request for the same location
                 # since the previous one was captcha'd.
-                encounter_result = encounter(
+                response = encounter(
                     hlvl_api, hlvl_account, pokemon.encounter_id,
                     pokemon.spawn_point_id, scan_location)
 
-            responses = encounter_result['responses']
-
             # Verify if encounter request was successful.
-            if 'ENCOUNTER' not in responses:
+            if not response or 'ENCOUNTER' not in response['responses']:
                 continue
 
             # Validate encounter status.
+            responses = response['responses']
             enc_status = responses['ENCOUNTER'].status
             if enc_status != 1:
                 continue
