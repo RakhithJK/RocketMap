@@ -8,6 +8,7 @@ from collections import OrderedDict, deque
 from datetime import datetime, timedelta
 from requests import Session
 from threading import Lock, Thread
+from timeit import default_timer
 
 from .account import AccountBanned, check_login, setup_api
 from .altitude import get_altitude
@@ -54,30 +55,44 @@ class AccountManager(object):
         # Release accounts previously used by this instance.
         self._release_instance()
         # Load required accounts to start working.
-        self._account_keeper(True)
+        self._account_keeper(notice=True)
+        time.sleep(10)
         # Captcha solver current thread ID.
         self.thread_id = 0
 
-        cycle = 0
-        time.sleep(10)
-        while True:
-            cycle += 1
+        # Run account management cycle every 15 seconds.
+        run_manager_interval = 15
+        # Display warnings once every 5 minutes.
+        notice_interval = 300
+        notice_timer = default_timer()
+        # Run account recycler once every 60 seconds.
+        account_recycler_interval = 60
+        account_recycler_timer = default_timer()
+        # Run account monitor once every 10 minutes.
+        account_monitor_interval = 600
+        account_monitor_timer = default_timer()
 
-            # Run once every 15 seconds.
-            self._account_keeper(notice=(cycle % 40 == 0))
+        while True:
+            now = default_timer()
+
+            display_notice = False
+            if now - notice_timer > notice_interval:
+                display_notice = True
+                notice_timer = default_timer()
+
+            self._account_keeper(notice=display_notice)
             if self.args.captcha_solving:
                 self._captcha_manager()
 
-            # Run once every 60 seconds.
-            if cycle % 4 == 0:
+            if now - account_recycler_timer > account_recycler_interval:
                 self._account_recycler()
+                account_recycler_timer = default_timer()
 
-            # Run once every 10 min.
-            if cycle % 40 == 0:
+            if now - account_monitor_timer > account_monitor_interval:
                 self._account_monitor()
-                cycle = 0
+                account_monitor_timer = default_timer()
 
-            time.sleep(15)
+            time.sleep(run_manager_interval)
 
     def _account_keeper(self, notice=False):
         log.debug('Account keeper running. ' +
