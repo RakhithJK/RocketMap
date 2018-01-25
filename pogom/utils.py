@@ -187,10 +187,10 @@ def get_args():
                         action='store_true', default=False)
     common_list = parser.add_mutually_exclusive_group()
     common_list.add_argument('-cpl', '--common-pokemon-list', action='append',
-                             default=[16, 19, 23, 27, 29, 32, 41, 43, 46,
-                                      52, 54, 60, 69, 72, 74, 77, 81, 98,
-                                      118, 120, 129, 161, 165, 167, 177,
-                                      183, 187, 191, 194, 198, 209, 218],
+                             default=[16, 19, 23, 27, 29, 32, 43, 46, 52, 54,
+                                      60, 69, 77, 81, 98, 118, 120, 129, 177,
+                                      183, 187, 191, 194, 209, 218, 293, 304,
+                                      320, 325, 339],
                              help=('List of Pokemon IDs considered common. ' +
                                    'Used to detect shadow banned accounts.'))
     common_list.add_argument('-cplf', '--common-pokemon-list-file', default='',
