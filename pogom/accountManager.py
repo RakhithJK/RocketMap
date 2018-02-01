@@ -326,13 +326,19 @@ class AccountManager(object):
             # Allow high-level accounts to be allocated for scanning.
             conditions &= (Account.level < self.high_level)
 
+        if self.args.account_max_rotation:
+            sort_date = Account.last_modified.asc()
+            sort_level = Account.level.asc()
+        else:
+            sort_date = Account.last_modified.desc()
+            sort_level = Account.level.desc()
+
         try:
             with Account.database().execution_context():
                 query = (Account
                          .select()
                          .where(conditions)
-                         .order_by(Account.level.desc(),
-                                   Account.last_modified.desc())
+                         .order_by(sort_level, sort_date)
                          .limit(min(250, count))
                          .dicts())
                 accounts = {}

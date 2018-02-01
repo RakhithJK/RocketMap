@@ -78,6 +78,10 @@ def get_args():
                         default=120,
                         help=('Keep excess high-level accounts allocated ' +
                               'for at least X seconds. 0 to disable.'))
+    parser.add_argument('-amr', '--account-max-rotation',
+                        help=('Maximize account rotation. Accounts that are ' +
+                              'unused longer are allocated first.'),
+                        action='store_true', default=False)
     parser.add_argument('-amf', '--account-max-failures', type=int,
                         default=5,
                         help=('Consecutive login failures required to ' +
