@@ -208,6 +208,8 @@ class AccountManager(object):
 
             if 'exception' in reason:
                 rest_interval = rest_interval * 0.1
+            elif 'login' in reason:
+                rest_interval = self.args.login_timeout * 3600
             elif account['banned'] != AccountBanned.Clear:
                 rest_interval = rest_interval * 10
 
@@ -336,7 +338,10 @@ class AccountManager(object):
     # Allocate available accounts from database.
     def _allocate_accounts(self, count, reuse, hlvl):
         # Build query conditions to select valid and usable accounts.
-        conditions = (Account.allocated == 0)
+        timeout = datetime.utcnow() - timedelta(hours=self.args.login_timeout)
+        conditions = ((Account.allocated == 0) &
+                      ((Account.failed == 0) |
+                       (Account.last_modified < timeout)))
         if self.args.no_pokemon or self.args.shadow_ban_scan:
             conditions &= (Account.banned <= AccountBanned.Shadowban)
         else:
@@ -360,7 +365,6 @@ class AccountManager(object):
                          .order_by(Account.last_modified.desc())
                          .limit(min(250, count))
                          .dicts())
-
                 accounts = {}
                 for dba in query:
                     # Update account object.
@@ -549,20 +553,13 @@ class AccountManager(object):
         with accounts_lock:
             # Make sure account is active.
             if username not in active_pool:
-                log.error('Unable to find %s account %s in active pool.',
-                          active_pool, username)
+                log.warning('Unable to find %s account %s in active pool.',
+                            account_pool, username)
             else:
                 log.info('Moving active %s account %s to failed pool.',
                          account_pool, username)
 
                 active_pool.pop(username)
-                if account['banned'] == AccountBanned.Shadowban:
-                    reason = 'Shadow banned'
-                if account['banned'] == AccountBanned.Temporary:
-                    reason = 'Temporary ban'
-                if account['banned'] == AccountBanned.Permanent:
-                    reason = 'Permanent ban'
-
                 self.accounts['failed'].append((account, reason, False))
 
         # Update account information in database.
@@ -589,7 +586,7 @@ class AccountManager(object):
                 'rare Pokemon. Switching accounts...').format(
                     account['username'], status['no_rares'])
             log.warning(status['message'])
-            self.failed_account(account, 'shadowban')
+            self.failed_account(account, 'shadow banned')
             return False
 
         # Update account information in database.
@@ -861,7 +858,8 @@ class AccountManager(object):
             location = jitter_location(location)
 
         api.set_position(*location)
-        check_login(self.args, account, api, status['proxy_url'])
+        if not check_login(self, status, api, account):
+            return
 
         if not token:
             token = token_request(self.args, status, captcha_url)

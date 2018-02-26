@@ -21,14 +21,6 @@ from .apiRequests import (send_generic_request, fort_details,
 log = logging.getLogger(__name__)
 
 
-class TooManyLoginAttempts(Exception):
-    pass
-
-
-class LoginSequenceFail(Exception):
-    pass
-
-
 # Keep track of different types of bans using a single field.
 class AccountBanned:
     Clear = 0
@@ -77,7 +69,7 @@ def setup_api(args, status, account):
 
 
 # Use API to check the login status, and retry the login if possible.
-def check_login(args, account, api, proxy_url):
+def check_login(account_manager, status, api, account):
     # Logged in? Enough time left? Cool!
     if api._auth_provider and api._auth_provider._access_token:
         remaining_time = api._auth_provider._access_token_expiry - time.time()
@@ -86,14 +78,19 @@ def check_login(args, account, api, proxy_url):
             log.debug(
                 'Credentials remain valid for another %f seconds.',
                 remaining_time)
-            return
+            return True
 
     # Try to login. Repeat a few times, but don't get stuck here.
-    log.info('Logging in account {}...'.format(account['username']))
+    status['message'] = 'Logging in Pokemon Go with account {}...'.format(
+        account['username'])
+    log.info(status['message'])
     num_tries = 0
+    login_delay = account_manager.args.login_delay
+    login_retries = account_manager.args.login_retries
+    proxy_url = status['proxy_url']
 
     # One initial try + login_retries.
-    while num_tries < (args.login_retries + 1):
+    while num_tries < (login_retries + 1):
         try:
             if proxy_url:
                 api.set_authentication(
@@ -110,34 +107,52 @@ def check_login(args, account, api, proxy_url):
             break
         except AuthException:
             num_tries += 1
-            log.error(
-                ('Failed to login to Pokemon Go with account %s. ' +
-                 'Trying again in %g seconds.'),
-                account['username'], args.login_delay)
-            time.sleep(args.login_delay)
+            status['message'] = (
+                'Failed attempt #{} to login to Pokemon Go with account {}. ' +
+                'Trying again in {} seconds.').format(
+                    num_tries, account['username'], login_delay)
+            log.error(status['message'])
+            time.sleep(login_delay)
 
-    if num_tries > args.login_retries:
-        log.error('Failed %d times to login to Pokemon Go with account %s.',
-                  num_tries, account['username'])
+    if num_tries > login_retries:
         account['failed'] += 1
-        if account['failed'] < args.account_max_failures:
-            raise TooManyLoginAttempts('Exceeded login attempts.')
+        failed_count = num_tries * account['failed']
+        if account['failed'] < account_manager.args.account_max_failures:
+            status['message'] = (
+                'Unable to login to Pokemon Go with account {}. ' +
+                'Failed {} login attempts on {} separate occasions.').format(
+                    account['username'], failed_count, account['failed'])
+
+            account_manager.failed_account(account, 'login')
         else:
-            message = 'Account has a permanent ban: {} failed logins.'.format(
-                args.login_retries * args.account_max_failures)
-            log.error(message)
+            status['message'] = (
+                'Account {} assumed permanently banned. ' +
+                'Failed {} login attempts on {} separate occasions.').format(
+                    account['username'], failed_count, account['failed'])
+
             account['banned'] = AccountBanned.Permanent
-            raise AccountBannedException(message)
+            account_manager.failed_account(account, 'permanent ban')
+
+        log.error(status['message'])
+        return False
 
     account['failed'] = 0
     time.sleep(random.uniform(2, 4))
 
     # Simulate login sequence.
-    rpc_login_sequence(args, api, account)
+    if not rpc_login_sequence(account_manager, status, api, account):
+        fail_reason = 'exception'
+        if account['banned'] == AccountBanned.Temporary:
+            fail_reason = 'temporary ban'
+
+        account_manager.failed_account(account, fail_reason)
+        return False
+
+    return True
 
 
 # Simulate real app via login sequence.
-def rpc_login_sequence(args, api, account):
+def rpc_login_sequence(account_manager, status, api, account):
     total_req = 0
     app_version = PGoApi.get_api_version()
 
@@ -151,20 +166,21 @@ def rpc_login_sequence(args, api, account):
         total_req += 1
         time.sleep(random.uniform(.43, .97))
     except Exception as e:
-        log.exception('Login for account %s failed.'
-                      + ' Exception in call request: %s.',
-                      account['username'],
-                      e)
-        raise LoginSequenceFail('Failed during empty request in login'
-                                + ' sequence for account {}.'.format(
-                                    account['username']))
+        log.exception('Login sequence for account %s failed. ' +
+                      'Exception in call request: %s.',
+                      account['username'], e)
+
+        status['message'] = (
+            'Account {} failed RPC login sequence step #1.').format(
+                account['username'])
+        return False
 
     # 2 - Get player information.
     log.debug('Fetching player information...')
 
     try:
         req = api.create_request()
-        req.get_player(player_locale=args.player_locale)
+        req.get_player(player_locale=account_manager.args.player_locale)
         resp = req.call(False)
         parse_get_player(account, resp)
 
@@ -174,13 +190,14 @@ def rpc_login_sequence(args, api, account):
             log.warning('Account %s has received a warning.',
                         account['username'])
     except Exception as e:
-        log.exception('Login for account %s failed. Exception in ' +
-                      'player request: %s.',
-                      account['username'],
-                      e)
-        raise LoginSequenceFail('Failed while retrieving player information in'
-                                + ' login sequence for account {}.'.format(
-                                    account['username']))
+        log.exception('Login sequence for account %s failed. ' +
+                      'Exception in player request: %s.',
+                      account['username'], e)
+
+        status['message'] = (
+            'Account {} failed RPC login sequence step #2.').format(
+                account['username'])
+        return False
 
     # 3 - Get remote config version.
     log.debug('Downloading remote config version...')
@@ -198,15 +215,21 @@ def rpc_login_sequence(args, api, account):
         total_req += 1
         time.sleep(random.uniform(.53, 1.1))
     except AccountBannedException as e:
+        status['message'] = (
+            'Account {} is temporarily banned.').format(account['username'])
+        log.error(status['message'])
         account['banned'] = AccountBanned.Temporary
-        log.exception('Error while downloading remote config: %s.', e)
-        raise LoginSequenceFail('Account {} is temporarily banned.'.format(
-                                account['username']))
+
+        return False
     except Exception as e:
-        log.exception('Error while downloading remote config: %s.', e)
-        raise LoginSequenceFail('Failed while getting remote config version in'
-                                + ' login sequence for account {}.'.format(
-                                    account['username']))
+        log.exception('Login sequence for account %s failed. ' +
+                      'Exception downloading remote config: %s.',
+                      account['username'], e)
+
+        status['message'] = (
+            'Account {} failed RPC login sequence step #3.').format(
+                account['username'])
+        return False
 
     # 4 - Get asset digest.
     log.debug('Fetching asset digest...')
@@ -297,8 +320,10 @@ def rpc_login_sequence(args, api, account):
 
     # Check tutorial completion.
     if not all(x in account['tutorials'] for x in (0, 1, 3, 4, 7)):
-        log.info('Completing tutorial steps for %s.', account['username'])
-        complete_tutorial(args, api, account)
+        status['message'] = (
+            'Completing tutorial steps for {}.').format(account['username'])
+        log.info(status['message'])
+        complete_tutorial(api, account, account_manager.args.player_locale)
     else:
         log.debug('Account %s already did the tutorials.', account['username'])
         # 6 - Get player profile.
@@ -310,16 +335,18 @@ def rpc_login_sequence(args, api, account):
             total_req += 1
             time.sleep(random.uniform(.2, .3))
         except Exception as e:
-            log.exception('Login for account %s failed. Exception occurred ' +
-                          'while fetching player profile: %s.',
-                          account['username'],
-                          e)
-            raise LoginSequenceFail('Failed while getting player profile in'
-                                    + ' login sequence for account {}.'.format(
-                                        account['username']))
+            log.exception('Login sequence for account %s failed. ' +
+                          'Exception getting player profile: %s.',
+                          account['username'], e)
 
+            status['message'] = (
+                'Account {} failed RPC login sequence step #6.').format(
+                    account['username'])
+            return False
+
+    # 7 - Make an empty request to retrieve store items.
     log.debug('Retrieving Store Items...')
-    try:  # 7 - Make an empty request to retrieve store items.
+    try:
         req = api.create_request()
         req.get_store_items()
         req.call(False)
@@ -327,13 +354,18 @@ def rpc_login_sequence(args, api, account):
         total_req += 1
         time.sleep(random.uniform(.6, 1.1))
     except Exception as e:
-        log.exception('Login for account %s failed. Exception in ' +
-                      'retrieving Store Items: %s.', account['username'],
-                      e)
-        raise LoginSequenceFail('Failed during login sequence.')
+        log.exception('Login sequence for account %s failed. ' +
+                      'Exception retrieving store items: %s.',
+                      account['username'], e)
 
+        status['message'] = (
+            'Account {} failed RPC login sequence step #7.').format(
+                account['username'])
+        return False
+
+    # 8 - Make an empty request to fetch all News.
     log.debug('Fetching News...')
-    try:  # 8 - Make an empty request to fetch all News.
+    try:
         req = api.create_request()
         req.fetch_all_news()
         send_generic_request(req, account, settings=True)
@@ -341,14 +373,17 @@ def rpc_login_sequence(args, api, account):
         total_req += 1
         time.sleep(random.uniform(.45, .7))
     except Exception as e:
-        log.exception('Login for account %s failed. Exception while ' +
-                      'fetching all news: %s.', account['username'],
-                      e)
-        raise LoginSequenceFail('Failed during login sequence.')
+        log.exception('Login sequence for account %s failed. ' +
+                      'Exception fetching all news: %s.',
+                      account['username'], e)
+
+        status['message'] = (
+            'Account {} failed RPC login sequence step #8.').format(
+                account['username'])
+        return False
 
     # 9 - Check if there are level up rewards to claim.
     log.debug('Checking if there are level up rewards to claim...')
-
     try:
         req = api.create_request()
         req.level_up_rewards(level=account['level'])
@@ -357,17 +392,19 @@ def rpc_login_sequence(args, api, account):
         total_req += 1
         time.sleep(random.uniform(.45, .7))
     except Exception as e:
-        log.exception('Login for account %s failed. Exception occurred ' +
-                      'while fetching level-up rewards: %s.',
-                      account['username'],
-                      e)
-        raise LoginSequenceFail('Failed while getting level-up rewards in'
-                                + ' login sequence for account {}.'.format(
-                                    account['username']))
+        log.exception('Login sequence for account %s failed. ' +
+                      'Exception fetching level-up rewards: %s.',
+                      account['username'], e)
 
-    log.info('RPC login sequence for account %s successful with %s requests.',
-             account['username'],
-             total_req)
+        status['message'] = (
+            'Account {} failed RPC login sequence step #9.').format(
+                account['username'])
+        return False
+
+    status['message'] = (
+            'Login RPC sequence for {} successful with {} requests.'.format(
+                account['username'], total_req))
+    log.info(status['message'])
 
     time.sleep(random.uniform(3, 5))
 
@@ -379,12 +416,13 @@ def rpc_login_sequence(args, api, account):
         send_generic_request(req, account)
 
     time.sleep(random.uniform(10, 20))
+    return True
 
 
 # Complete minimal tutorial steps.
 # API argument needs to be a logged in API instance.
 # TODO: Check if game client bundles these requests, or does them separately.
-def complete_tutorial(args, api, account):
+def complete_tutorial(api, account, player_locale):
     tutorial_state = account['tutorials']
     if 0 not in tutorial_state:
         time.sleep(random.uniform(1, 5))
@@ -395,7 +433,7 @@ def complete_tutorial(args, api, account):
 
         time.sleep(random.uniform(0.5, 0.6))
         req = api.create_request()
-        req.get_player(player_locale=args.player_locale)
+        req.get_player(player_locale=player_locale)
         send_generic_request(req, account, buddy=False, inbox=False)
 
     if 1 not in tutorial_state:
@@ -445,7 +483,7 @@ def complete_tutorial(args, api, account):
 
         time.sleep(random.uniform(0.5, 0.6))
         req = api.create_request()
-        req.get_player(player_locale=args.player_locale)
+        req.get_player(player_locale=player_locale)
         send_generic_request(req, account, inbox=False)
 
     if 4 not in tutorial_state:
@@ -457,7 +495,7 @@ def complete_tutorial(args, api, account):
 
         time.sleep(0.1)
         req = api.create_request()
-        req.get_player(player_locale=args.player_locale)
+        req.get_player(player_locale=player_locale)
         send_generic_request(req, account, inbox=False)
 
         time.sleep(random.uniform(1, 1.3))

@@ -916,8 +916,9 @@ def search_worker_thread(args, account_manager, control_flags, status,
                     api.activate_hash_server(key)
 
                 # Ok, let's get started -- check our login status.
-                status['message'] = 'Logging in...'
-                check_login(args, account, api, status['proxy_url'])
+                if not check_login(account_manager, status, api, account):
+                    # Exit this loop to get a new account and recreate API.
+                    break
 
                 # Only run this when it's the account's first login, after
                 # check_login().

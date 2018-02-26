@@ -2573,7 +2573,8 @@ def encounter_pokemon(args, account_manager, status, api, account, pokemon):
         hlvl_api.set_position(*scan_location)
 
         # Log in.
-        check_login(args, hlvl_account, hlvl_api, status['proxy_url'])
+        if not check_login(account_manager, status, hlvl_api, hlvl_account):
+            return False
 
         # Account was inserted as being high-level but it's not.
         if hlvl_account['level'] < 30:

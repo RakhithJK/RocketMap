@@ -190,7 +190,7 @@ def get_args():
                              default=[16, 19, 23, 27, 29, 32, 43, 46, 52, 54,
                                       60, 69, 77, 81, 98, 118, 120, 129, 177,
                                       183, 187, 191, 194, 209, 218, 293, 304,
-                                      320, 325, 339],
+                                      320, 325, 333, 339],
                              help=('List of Pokemon IDs considered common. ' +
                                    'Used to detect shadow banned accounts.'))
     common_list.add_argument('-cplf', '--common-pokemon-list-file', default='',
@@ -240,6 +240,10 @@ def get_args():
                         help=('Number of times to retry the login before ' +
                               'refreshing a thread.'),
                         type=int, default=3)
+    parser.add_argument('-lt', '--login-timeout',
+                        help=('Time, in hours, an account must wait after ' +
+                              'failing to login, 0 to disable. Default: 8'),
+                        type=int, default=8)
     parser.add_argument('-mf', '--max-failures',
                         help=('Maximum number of failures to parse ' +
                               'locations before an account will go into a ' +
