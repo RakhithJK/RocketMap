@@ -201,8 +201,6 @@ def rpc_login_sequence(account_manager, status, api, account):
 
     # 3 - Get remote config version.
     log.debug('Downloading remote config version...')
-    old_config = account.get('remote_config', {})
-
     try:
         req = api.create_request()
         req.download_remote_config_version(
@@ -231,11 +229,13 @@ def rpc_login_sequence(account_manager, status, api, account):
                 account['username'])
         return False
 
-    # 4 - Get asset digest.
-    log.debug('Fetching asset digest...')
-    config = account.get('remote_config', {})
+    remote_config = account.get('remote_config', {})
 
-    if config.get('asset_time', 0) > old_config.get('asset_time', 0):
+    # 4 - Get asset digest.
+    if remote_config.get('asset_time', 0) <= account['time_assets']:
+        log.debug('Skipped fetching asset digest.')
+    else:
+        log.debug('Fetching asset digest...')
         i = random.randint(0, 3)
         req_count = 0
         result = 2
@@ -278,9 +278,10 @@ def rpc_login_sequence(account_manager, status, api, account):
                       req_count)
 
     # 5 - Get item templates.
-    log.debug('Fetching item templates...')
-
-    if config.get('template_time', 0) > old_config.get('template_time', 0):
+    if remote_config.get('template_time', 0) <= account['time_templates']:
+        log.debug('Skipped fetching item templates.')
+    else:
+        log.debug('Fetching item templates...')
         i = random.randint(0, 3)
         req_count = 0
         result = 2

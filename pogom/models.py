@@ -60,6 +60,10 @@ class UBigIntegerField(BigIntegerField):
     db_field = 'bigint unsigned'
 
 
+class UIntegerField(IntegerField):
+    db_field = 'int unsigned'
+
+
 def init_database(app):
     log.info('Connecting to MySQL database on %s:%i...',
              args.db_host, args.db_port)
@@ -118,6 +122,8 @@ class Account(LatLongModel):
     warning = BooleanField(index=True, default=False)
     banned = SmallIntegerField(index=True, default=AccountBanned.Clear)
     level = SmallIntegerField(index=True, default=0)
+    time_assets = UIntegerField(default=0)
+    time_templates = UIntegerField(default=0)
     last_scan = DateTimeField(index=True, null=True)
     last_modified = DateTimeField(index=True, default=datetime.utcnow)
 
@@ -125,6 +131,7 @@ class Account(LatLongModel):
     @staticmethod
     def db_format(account):
         account['last_modified'] = datetime.utcnow()
+        remote_config = account.get('remote_config', {})
         return {
             'auth_service': account['auth_service'],
             'username': account['username'],
@@ -138,6 +145,8 @@ class Account(LatLongModel):
             'warning': account.get('warning', False),
             'banned': account.get('banned', AccountBanned.Clear),
             'level': account['level'],
+            'time_assets': remote_config.get('asset_time', 0),
+            'time_templates': remote_config.get('template_time', 0),
             'last_scan': account.get('last_scan', None),
             'last_modified': account['last_modified']}
 
