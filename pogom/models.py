@@ -105,8 +105,6 @@ class LatLongModel(BaseModel):
         return results
 
 
-# The account DB model provides methods for various tasks in relation to
-# account handling in RM.
 class Account(LatLongModel):
     auth_service = Utf8mb4CharField(max_length=6)
     username = Utf8mb4CharField(primary_key=True, max_length=50)
@@ -123,6 +121,7 @@ class Account(LatLongModel):
     last_scan = DateTimeField(index=True, null=True)
     last_modified = DateTimeField(index=True, default=datetime.utcnow)
 
+    # Format account dictionary accordingly to database model.
     @staticmethod
     def db_format(account):
         account['last_modified'] = datetime.utcnow()
@@ -141,6 +140,39 @@ class Account(LatLongModel):
             'level': account['level'],
             'last_scan': account.get('last_scan', None),
             'last_modified': account['last_modified']}
+
+    # Clears all accounts in the database.
+    @staticmethod
+    def clear_all():
+        query = Account.delete().execute()
+        if query:
+            log.info('Cleared %d accounts from database.', query)
+
+    # Filter account list and insert new accounts in the database.
+    @staticmethod
+    def insert_new(accounts):
+        log.info('Processing %d accounts into the database.', len(accounts))
+        step = 250
+        count = 0
+        for idx in range(0, len(accounts), step):
+            accounts_batch = accounts[idx:idx+step]
+            usernames = [a['username'] for a in accounts_batch]
+            query = (Account
+                     .select(Account.username)
+                     .where(Account.username << usernames)
+                     .dicts())
+
+            db_usernames = [dbu['username'] for dbu in query]
+            new_accounts = [x for x in accounts_batch
+                            if x['username'] not in db_usernames]
+            if not new_accounts:
+                continue
+
+            with Account.database().atomic():
+                if Account.insert_many(new_accounts).execute():
+                    count += len(new_accounts)
+
+        log.info('Inserted %d new accounts into the database.', count)
 
 
 class Pokemon(LatLongModel):

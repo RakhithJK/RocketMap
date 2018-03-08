@@ -289,37 +289,6 @@ class AccountManager(object):
                  .execute())
         log.debug('Reseted %d temporarily banned accounts.', query)
 
-    # Clears all accounts in the database.
-    def clear_all(self):
-        query = Account.delete().execute()
-        if query:
-            log.info('Cleared %d accounts from database.', query)
-
-    # Filter account list and insert new accounts in the database.
-    def insert_new(self, accounts):
-        log.info('Processing %d accounts into the database.', len(accounts))
-        step = 250
-        count = 0
-        for idx in range(0, len(accounts), step):
-            accounts_batch = accounts[idx:idx+step]
-            usernames = [a['username'] for a in accounts_batch]
-            query = (Account
-                     .select(Account.username)
-                     .where(Account.username << usernames)
-                     .dicts())
-
-            db_usernames = [dbu['username'] for dbu in query]
-            new_accounts = [x for x in accounts_batch
-                            if x['username'] not in db_usernames]
-            if not new_accounts:
-                continue
-
-            with Account.database().atomic():
-                if Account.insert_many(new_accounts).execute():
-                    count += len(new_accounts)
-
-        log.info('Inserted %d new accounts into the database.', count)
-
     # Release accounts previously used by this instance.
     def _release_instance(self):
         rows = 0

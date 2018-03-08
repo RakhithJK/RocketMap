@@ -24,9 +24,9 @@ from pogom.utils import (get_args, now, gmaps_reverse_geolocate,
                          generate_instance_id, parse_accounts_csv)
 from pogom.altitude import get_gmaps_altitude
 
-from pogom.models import (MainWorker, PlayerLocale, init_database,
-                          clean_db_loop, create_tables, drop_tables,
-                          db_updater,
+from pogom.models import (Account, MainWorker, PlayerLocale,
+                          init_database, clean_db_loop,
+                          create_tables, drop_tables, db_updater,
                           verify_table_encoding, verify_database_schema)
 from pogom.webhook import wh_updater
 
@@ -429,30 +429,25 @@ def main():
                      args.instance_id)
         sys.exit(1)
 
+    # Clear all accounts from the database.
+    if args.clear_db_accounts:
+        Account.clear_all()
+
+    # Parse accounts from CSV file into the database.
+    if args.accounts_csv:
+        accounts = parse_accounts_csv(args.accounts_csv)
+        if not accounts:
+            log.critical('Found some errors in accounts CSV file: %s',
+                         args.accounts_csv)
+            sys.exit(1)
+        else:
+            Account.insert_new(accounts.values())
+
     if not args.only_server:
         # Check if we are able to scan.
         if not can_start_scanning(args):
             sys.exit(1)
 
-        # Create account manager.
-        account_manager = AccountManager(
-            args, db_updates_queue, wh_updates_queue)
-
-        # Clear all accounts from the database.
-        if args.clear_db_accounts:
-            account_manager.clear_all()
-
-        # Parse accounts from CSV file into the database.
-        if args.accounts_csv:
-            accounts = parse_accounts_csv(args.accounts_csv)
-            if not accounts:
-                log.critical('Found some errors in accounts CSV file: %s',
-                             args.accounts_csv)
-                sys.exit(1)
-            else:
-                account_manager.insert_new(accounts.values())
-
-    if not args.only_server:
         # Speed limit.
         log.info('Scanning speed limit %s.',
                  'set to {} km/h'.format(args.kph)
@@ -464,6 +459,10 @@ def main():
         # Check if we are able to scan.
         if not can_start_scanning(args):
             sys.exit(1)
+
+        # Create account manager.
+        account_manager = AccountManager(
+            args, db_updates_queue, wh_updates_queue)
 
         # Start account manager thread.
         log.info('Starting account manager thread...')
