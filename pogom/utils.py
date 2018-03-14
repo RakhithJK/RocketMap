@@ -98,7 +98,7 @@ def get_args():
                         help=('Load accounts from CSV file containing one ' +
                               'account per line with format:' +
                               '<ptc/google>,<username>,<password>[,<level>]'))
-    parser.add_argument('-hs', '--hlvl-scan',
+    parser.add_argument('-sh', '--scan-hlvl',
                         help='Use high-level accounts as regular accounts.',
                         action='store_true', default=False)
     parser.add_argument('-bh', '--beehive',

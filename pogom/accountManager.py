@@ -322,7 +322,7 @@ class AccountManager(object):
                            (Account.instance_id != self.instance_id))
         if hlvl:
             conditions &= (Account.level >= self.high_level)
-        elif not self.args.hlvl_scan:
+        elif not self.args.scan_hlvl:
             # Allow high-level accounts to be allocated for scanning.
             conditions &= (Account.level < self.high_level)
 
@@ -331,7 +331,8 @@ class AccountManager(object):
                 query = (Account
                          .select()
                          .where(conditions)
-                         .order_by(Account.last_modified.desc())
+                         .order_by(Account.level.desc(),
+                                   Account.last_modified.desc())
                          .limit(min(250, count))
                          .dicts())
                 accounts = {}
