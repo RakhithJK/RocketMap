@@ -331,7 +331,8 @@ class AccountManager(object):
                 query = (Account
                          .select()
                          .where(conditions)
-                         .order_by(Account.last_modified.desc())
+                         .order_by(Account.level.desc(),
+                                   Account.last_modified.desc())
                          .limit(min(250, count))
                          .dicts())
                 accounts = {}
