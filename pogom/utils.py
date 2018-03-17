@@ -568,6 +568,34 @@ def get_args():
                          help=('Filter worker status that are inactive for ' +
                                'X minutes. Default: 30, 0 to disable.'),
                          type=int, default=30)
+    group = parser.add_argument_group('Discord User Authentication')
+    group.add_argument('-UA', '--user-auth',
+                       help='Require end-users to authenticate using Discord.',
+                       action='store_true', default=False)
+    group.add_argument('-UAsk', '--user-auth-secret-key', default=None,
+                       help='Secret key to encrypt session cookies. '
+                            'Use a randomly generated string.')
+    group.add_argument('-UAcid', '--user-auth-client-id', default=None,
+                       help='Discord Client ID for user authentication.')
+    group.add_argument('-UAcs', '--user-auth-client-secret', default=None,
+                       help='Discord Client secret for user authentication.')
+    group.add_argument('-UAh', '--user-auth-hostname', default=None,
+                       help='Hostname override for user authentication.')
+    group.add_argument('-UAgr', '--user-auth-guild-required', default=None,
+                       help='Discord Guild the users must join to be able '
+                            'to access the map.')
+    group.add_argument('-UAgi', '--user-auth-guild-invite', default=None,
+                       help='Invitation link for the required guild.')
+    group.add_argument('-UArr', '--user-auth-role-required',
+                       help='Discord Guild Role IDs the users are required '
+                            'to have at least one in order to access the map.',
+                       default=[], action='append')
+    group.add_argument('-UAri', '--user-auth-role-invite', default=None,
+                       help='Invitation link for the required role.')
+    group.add_argument('-UAbt', '--user-auth-bot-token', default=None,
+                       help='Discord Bot Token required for fetching user '
+                            'roles within the required Guild.')
+
     parser.set_defaults(DEBUG=False)
 
     args = parser.parse_args()
@@ -576,6 +604,27 @@ def get_args():
     args.log_filename = strftime(args.log_filename)
     args.log_filename = args.log_filename.replace('<sn>', '<SN>')
     args.log_filename = args.log_filename.replace('<SN>', args.status_name)
+
+    if args.user_auth:
+        if not args.user_auth_secret_key:
+            print(sys.argv[0] +
+                  ": error: arguments -UAs/--user-auth-secret is required.")
+            sys.exit(1)
+
+        if args.user_auth_guild_required and not args.user_auth_guild_invite:
+            print(sys.argv[0] +
+                  ": error: arguments -UAgi/--user-auth-guild-invite is " +
+                  "required when using -UAgr/--user-auth-guild-required.")
+            sys.exit(1)
+
+        if args.user_auth_role_required and not args.user_auth_guild_required:
+            print(sys.argv[0] +
+                  ": error: arguments -UAgr/--user-auth-guild-required is " +
+                  "required when using -UArr/--user-auth-role-required.")
+            sys.exit(1)
+
+        if args.user_auth_role_required and not args.user_auth_role_invite:
+            args.user_auth_role_invite = args.user_auth_guild_invite
 
     if args.only_server:
         if args.location is None:

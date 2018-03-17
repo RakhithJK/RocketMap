@@ -9,10 +9,11 @@ from datetime import datetime
 from s2sphere import LatLng
 from bisect import bisect_left
 from flask import Flask, abort, jsonify, render_template, request,\
-    make_response, send_from_directory
+    make_response, send_from_directory, redirect, session
 from flask.json import JSONEncoder
 from flask_compress import Compress
 
+from .userAuth import DiscordAPI
 from .models import (Pokemon, Gym, Pokestop, ScannedLocation,
                      MainWorker, WorkerStatus, Token, HashKeys,
                      SpawnPoint)
@@ -54,7 +55,7 @@ class Pogom(Flask):
 
         args = get_args()
 
-        # Global blist
+        # Global blacklist
         if not args.disable_blacklist:
             log.info('Retrieving blacklist...')
             self.blacklist = get_ip_blacklist()
@@ -68,9 +69,17 @@ class Pogom(Flask):
             self.blacklist = []
             self.blacklist_keys = []
 
+        if args.user_auth:
+            # Setup user authentication
+            self.discord_api = DiscordAPI(args)
+            self.secret_key = args.user_auth_secret_key
+            self.permanent_session_lifetime = 7 * 24 * 3600
+
         # Routes
         self.json_encoder = CustomJSONEncoder
         self.route("/", methods=['GET'])(self.fullmap)
+        self.route("/auth_callback", methods=['GET'])(self.auth_callback)
+        self.route("/auth_logout", methods=['GET'])(self.auth_logout)
         self.route("/raw_data", methods=['GET'])(self.raw_data)
         self.route("/loc", methods=['GET'])(self.loc)
         self.route("/next_loc", methods=['POST'])(self.next_loc)
@@ -89,6 +98,28 @@ class Pogom(Flask):
         self.route("/robots.txt", methods=['GET'])(self.render_robots_txt)
         self.route("/serviceWorker.min.js", methods=['GET'])(
             self.render_service_worker_js)
+
+    def auth_callback(self):
+        session.permanent = True
+        code = request.args.get('code')
+        if not code:
+            log.error('User authentication code not found in callback.')
+            abort(403)
+
+        response = self.discord_api.exchange_code(code)
+        if not response:
+            log.error('Failed OAuth request for user authentication.')
+            abort(403)
+
+        if not self.discord_api.validate_auth(session, response):
+            log.error('Failed to validate OAuth response from Discord API.')
+            abort(403)
+
+        return make_response(redirect('/'))
+
+    def auth_logout(self):
+        session.clear()
+        return make_response(redirect('/'))
 
     def render_robots_txt(self):
         return render_template('robots.txt')
@@ -141,6 +172,10 @@ class Pogom(Flask):
         if self._ip_is_blacklisted(ip_addr):
             log.debug('Denied access to %s: blacklisted IP.', ip_addr)
             abort(403)
+
+        # Verify user authentication.
+        if args.user_auth and request.endpoint != 'auth_callback':
+            return self.discord_api.check_auth(session)
 
     def _ip_is_blacklisted(self, ip):
         if not self.blacklist:
