@@ -111,9 +111,11 @@ class Pogom(Flask):
             log.error('Failed OAuth request for user authentication.')
             abort(403)
 
-        if not self.discord_api.validate_auth(session, response):
-            log.error('Failed to validate OAuth response from Discord API.')
+        valid = self.discord_api.validate_auth(session, response)
+        if not valid['auth'] and not valid['url']:
             abort(403)
+        elif not valid['auth']:
+            return make_response(redirect(valid['url']))
 
         return make_response(redirect('/'))
 

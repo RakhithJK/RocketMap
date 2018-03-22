@@ -18,13 +18,13 @@ class DiscordAPI():
     def __init__(self, args):
         self.client_id = args.user_auth_client_id
         self.client_secret = args.user_auth_client_secret
-        self.bot_token = args.user_auth_bot_token
 
         self.hostname = args.host
         if args.user_auth_hostname:
             self.hostname = args.user_auth_hostname
 
         self.redirect_uri = '{}/auth_callback'.format(self.hostname)
+        self.validity = args.user_auth_validity * 3600
 
         self.guild_required = args.user_auth_guild_required
         self.guild_invite_link = args.user_auth_guild_invite
@@ -90,15 +90,79 @@ class DiscordAPI():
         return self.post_request(uri, data, headers)
 
     def validate_auth(self, session, response):
-        expires_in = response.get('expires_in', 0) - 3600
-        if expires_in <= 0:
-            log.error('Invalid OAuth response from Discord API.')
-            return False
+        result = {'auth': False, 'url': None}
 
-        response['expires'] = (datetime.utcnow() +
-                               timedelta(seconds=expires_in))
+        access_token = response.get('access_token', None)
+        if not access_token:
+            log.error('Invalid OAuth response from Discord API.')
+            return result
+
+        expires_in = response['expires_in']
+        refresh_time = min(self.validity, expires_in)
+        response['refresh_date'] = (datetime.utcnow() +
+                                    timedelta(seconds=refresh_time))
+
+        user_guilds = self.get_user_guilds(access_token)
+        if user_guilds is None:
+            log.error('Unable to retrieve user guilds from Discord API.')
+            return result
+        elif user_guilds:
+            guild_ids = [x['id'] for x in user_guilds]
+            response['guilds'] = guild_ids
+
+        user_data = self.get_user(access_token)
+        if not user_data:
+            log.error('Unable to retrieve user data from Discord API.')
+            return result
+
+        user_id = user_data['id']
+        response['user_id'] = user_id
+        response['username'] = user_data['username']
+
+        guild_member = self.get_guild_member(self.guild_required, user_id)
+        if not guild_member:
+            log.error('Unable to retrieve user roles from Discord API.')
+            return result
+
+        role_ids = guild_member.get('roles', [])
+        role_names = []
+        for role_id in role_ids:
+            role_name = self.guild_roles.get(role_id, None)
+            if not role_name:
+                log.error('Discord user role is not on guild roles.')
+            else:
+                role_names.append(role_name)
+
+        response['roles'] = role_names
+
+        # Check requirements.
+        if not self.guild_required:
+            result['auth'] = True
+            return result
+
+        if self.guild_required not in response['guilds']:
+            log.debug('User %s has not joined the required Discord guild.',
+                      response['username'])
+            result['url'] = self.guild_invite_link
+            return result
+
+        if self.role_required:
+            roles_missing = len(self.role_required)
+            for role_required in self.role_required:
+                if role_required in response['roles']:
+                    roles_missing -= 1
+
+            if roles_missing:
+                log.debug('User %s is missing %d required role(s) to access.',
+                          response['username'], roles_missing)
+                result['url'] = self.role_invite_link
+                return result
+
+        # Register user credentials in session.
         session['user_auth'] = response
-        return True
+
+        result['auth'] = True
+        return result
 
     def redirect_to_auth(self):
         redirect_uri = urllib.quote(self.redirect_uri)
@@ -113,61 +177,19 @@ class DiscordAPI():
         if not user_auth:
             return self.redirect_to_auth()
 
-        if user_auth['expires'] < datetime.utcnow():
+        if user_auth['refresh_date'] < datetime.utcnow():
             response = self.refresh_token(user_auth['refresh_token'])
-            if not response or not self.validate_auth(session, response):
+            session.clear()
+            if not response:
+                log.error('Failed to refresh OAuth user authentication.')
                 return self.redirect_to_auth()
-
-        auth_token = user_auth['access_token']
-
-        if not self.guild_required:
-            return None
-
-        guild_ids = user_auth.get('guilds', [])
-        if not guild_ids:
-            user_guilds = self.get_user_guilds(auth_token)
-            if not user_guilds:
-                log.error('Unable to retrieve user guilds from Discord API.')
+            valid = self.validate_auth(session, response)
+            if not valid['auth'] and not valid['url']:
                 return self.redirect_to_auth()
-            guild_ids = [x['id'] for x in user_guilds]
-            session['user_auth']['guilds'] = guild_ids
+            elif not valid['auth']:
+                return redirect(valid['url'])
 
-        if self.guild_required not in guild_ids:
-            return redirect(self.guild_invite_link)
-
-        if not self.role_required:
-            return None
-
-        user_id = user_auth.get('user_id', None)
-        if not user_id:
-            user_data = self.get_user(auth_token)
-            if not user_data:
-                log.error('Unable to retrieve user data from Discord API.')
-                return self.redirect_to_auth()
-            user_id = user_data['id']
-            session['user_auth']['user_id'] = user_id
-
-        roles = user_auth.get('roles', [])
-        if not roles:
-            guild_member = self.get_guild_member(self.guild_required, user_id)
-            if not guild_member:
-                log.error('Unable to retrieve user roles from Discord API.')
-                return self.redirect_to_auth()
-
-            role_ids = guild_member.get('roles', [])
-            role_names = []
-            for role_id in role_ids:
-                role_name = self.guild_roles.get(role_id, None)
-                if role_name:
-                    role_names.append(role_name)
-
-            session['user_auth']['roles'] = role_names
-
-        for role_required in self.role_required:
-            if role_required in roles:
-                return None
-
-        return redirect(self.role_invite_link)
+        return None
 
     # https://discordapp.com/developers/docs/resources/user#get-current-user-guilds
     def get_user_guilds(self, auth_token):
@@ -217,6 +239,10 @@ class DiscordAPI():
             return False
 
         for role in guild_roles:
-            roles[role['id']] = role['name']
+            # Strip non-ascii characters from role name.
+            stripped = (c for c in role['name'] if 0 < ord(c) < 127)
+            role_name = ''.join(stripped)
+            roles[role['id']] = role_name
+            log.debug('Retrieved guild role: %s - %s.', role['id'], role_name)
 
         return roles
