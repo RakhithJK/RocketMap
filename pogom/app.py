@@ -176,8 +176,16 @@ class Pogom(Flask):
             abort(403)
 
         # Verify user authentication.
-        if args.user_auth and request.endpoint != 'auth_callback':
-            return self.discord_api.check_auth(session)
+        if not args.user_auth:
+            return
+        if request.endpoint == 'auth_callback':
+            return
+        if request.endpoint == 'submit_token':
+            return
+        if request.endpoint == 'get_account_stats':
+            return
+
+        return self.discord_api.check_auth(session)
 
     def _ip_is_blacklisted(self, ip):
         if not self.blacklist:
