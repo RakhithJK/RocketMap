@@ -156,9 +156,6 @@ def get_args():
     parser.add_argument('-cds', '--captcha-dsk',
                         help='Pokemon Go captcha data-sitekey.',
                         default="6LeeTScTAAAAADqvhqVMhPpr_vB9D364Ia-1dSgK")
-    parser.add_argument('-mcd', '--manual-captcha-domain',
-                        help='Domain to where captcha tokens will be sent.',
-                        default="http://127.0.0.1:5000")
     parser.add_argument('-mcr', '--manual-captcha-refresh',
                         help='Time available before captcha page refreshes.',
                         type=int, default=30)
@@ -247,6 +244,9 @@ def get_args():
                         help=('Locale for Pokemon names (check' +
                               ' static/dist/locales for more).'),
                         default='en')
+    parser.add_argument('-eh', '--external-hostname',
+                        help='Hostname used for external requests.',
+                        default="http://127.0.0.1:5000")
     parser.add_argument('-c', '--china',
                         help='Coordinates transformer for China.',
                         action='store_true')
@@ -572,8 +572,6 @@ def get_args():
     group.add_argument('-UA', '--user-auth',
                        help='Require end-users to authenticate using Discord.',
                        action='store_true', default=False)
-    group.add_argument('-UAh', '--user-auth-hostname', default=None,
-                       help='Hostname override for user authentication.')
     group.add_argument('-UAv', '--user-auth-validity',
                        help=('Check every X hours if user authentication ' +
                              'is still valid and refresh access token.'),
@@ -1361,7 +1359,7 @@ def _censor_args_namespace(args, censored_tag, empty_tag):
         'location',
         'captcha_key',
         'captcha_dsk',
-        'manual_captcha_domain',
+        'external_hostname',
         'host',
         'port',
         'gmaps_key',
@@ -1376,7 +1374,15 @@ def _censor_args_namespace(args, censored_tag, empty_tag):
         'trusted_proxies',
         'data_dir',
         'locales_dir',
-        'shared_config'
+        'shared_config',
+        'user_auth_secret_key',
+        'user_auth_client_id',
+        'user_auth_client_secret',
+        'user_auth_bot_token',
+        'user_auth_guild_required',
+        'user_auth_guild_invite',
+        'user_auth_role_required',
+        'user_auth_role_invite'
     ]
 
     for field in fields_to_censor:

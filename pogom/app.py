@@ -132,12 +132,12 @@ class Pogom(Flask):
     def get_bookmarklet(self):
         args = get_args()
         return render_template('bookmarklet.html',
-                               domain=args.manual_captcha_domain)
+                               domain=args.external_hostname)
 
     def render_inject_js(self):
         args = get_args()
         src = render_template('inject.js',
-                              domain=args.manual_captcha_domain,
+                              domain=args.external_hostname,
                               timer=args.manual_captcha_refresh)
 
         response = make_response(src)

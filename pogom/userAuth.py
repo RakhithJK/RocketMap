@@ -20,8 +20,8 @@ class DiscordAPI():
         self.client_secret = args.user_auth_client_secret
 
         self.hostname = args.host
-        if args.user_auth_hostname:
-            self.hostname = args.user_auth_hostname
+        if args.external_hostname:
+            self.hostname = args.external_hostname
 
         self.redirect_uri = '{}/auth_callback'.format(self.hostname)
         self.validity = args.user_auth_validity * 3600

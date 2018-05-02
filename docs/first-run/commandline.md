@@ -9,8 +9,7 @@
                     [-uac] [-j] [-al] [-st STEP_LIMIT] [-gf GEOFENCE_FILE]
                     [-gef GEOFENCE_EXCLUDED_FILE] [-sd SCAN_DELAY]
                     [--spawn-delay SPAWN_DELAY] [-enc] [-cs] [-ck CAPTCHA_KEY]
-                    [-cds CAPTCHA_DSK] [-mcd MANUAL_CAPTCHA_DOMAIN]
-                    [-mcr MANUAL_CAPTCHA_REFRESH]
+                    [-cds CAPTCHA_DSK] [-mcr MANUAL_CAPTCHA_REFRESH]
                     [-mct MANUAL_CAPTCHA_TIMEOUT] [-ed ENCOUNTER_DELAY]
                     [-ignf IGNORELIST_FILE] [-encwf ENC_WHITELIST_FILE]
                     [-nostore] [-apir API_RETRIES]
@@ -18,11 +17,11 @@
                     [-ld LOGIN_DELAY] [-lr LOGIN_RETRIES] [-mf MAX_FAILURES]
                     [-me MAX_EMPTY] [-bsr BAD_SCAN_RETRY]
                     [-msl MIN_SECONDS_LEFT] [-dc] [-H HOST] [-P PORT]
-                    [-L LOCALE] [-c] [-m MOCK] [-ns] [-os] [-sc] [-nfl] -k
-                    GMAPS_KEY [--skip-empty] [-C] [-cd] [-np] [-ng] [-nr]
-                    [-nk] [-ss] [-ssct SS_CLUSTER_TIME] [-speed] [-spin]
-                    [-ams ACCOUNT_MAX_SPINS] [-kph KPH] [-hkph HLVL_KPH]
-                    [-ldur LURE_DURATION] [-px PROXY] [-pxsc]
+                    [-L LOCALE] [-eh EXTERNAL_HOSTNAME] [-c] [-m MOCK] [-ns]
+                    [-os] [-sc] [-nfl] -k GMAPS_KEY [--skip-empty] [-C] [-cd]
+                    [-np] [-ng] [-nr] [-nk] [-ss] [-ssct SS_CLUSTER_TIME]
+                    [-speed] [-spin] [-ams ACCOUNT_MAX_SPINS] [-kph KPH]
+                    [-hkph HLVL_KPH] [-ldur LURE_DURATION] [-px PROXY] [-pxsc]
                     [-pxt PROXY_TEST_TIMEOUT] [-pxre PROXY_TEST_RETRIES]
                     [-pxbf PROXY_TEST_BACKOFF_FACTOR]
                     [-pxc PROXY_TEST_CONCURRENCY] [-pxd PROXY_DISPLAY]
@@ -41,21 +40,22 @@
                     [--ssl-certificate SSL_CERTIFICATE]
                     [--ssl-privatekey SSL_PRIVATEKEY] [-ps [logs]]
                     [-slt STATS_LOG_TIMER] [-sn STATUS_NAME] [-hk HASH_KEY]
-                    [-novc] [-vci VERSION_CHECK_INTERVAL]
-                    [-odt ON_DEMAND_TIMEOUT] [--disable-blacklist]
-                    [-tp TRUSTED_PROXIES] [--api-version API_VERSION]
-                    [--no-file-logs] [--log-path LOG_PATH]
-                    [--log-filename LOG_FILENAME] [--dump] [-exg]
-                    [-v | --verbosity VERBOSE] [-Rh RARITY_HOURS]
-                    [-Rf RARITY_UPDATE_FREQUENCY] [-SPp STATUS_PAGE_PASSWORD]
-                    [-SPf STATUS_PAGE_FILTER]
-                    [-UA] [-UAsk USER_AUTH_SECRET_KEY]
-                    [-UAcid USER_AUTH_CLIENT_ID]
-                    [-UAcs USER_AUTH_CLIENT_SECRET] [-UAh USER_AUTH_HOSTNAME]
+                    [-hs {bossland,devkat}] [--hash-header-sleep] [-novc]
+                    [-vci VERSION_CHECK_INTERVAL] [-odt ON_DEMAND_TIMEOUT]
+                    [--disable-blacklist] [-tp TRUSTED_PROXIES]
+                    [--api-version API_VERSION] [--no-file-logs]
+                    [--log-path LOG_PATH] [--log-filename LOG_FILENAME]
+                    [--dump] [-exg] [-v | --verbosity VERBOSE]
+                    [-Rh RARITY_HOURS] [-Rf RARITY_UPDATE_FREQUENCY]
+                    [-SPp STATUS_PAGE_PASSWORD] [-SPf STATUS_PAGE_FILTER]
+                    [-UA] [-UAv USER_AUTH_VALIDITY]
+                    [-UAsk USER_AUTH_SECRET_KEY] [-UAcid USER_AUTH_CLIENT_ID]
+                    [-UAcs USER_AUTH_CLIENT_SECRET]
+                    [-UAbt USER_AUTH_BOT_TOKEN]
                     [-UAgr USER_AUTH_GUILD_REQUIRED]
                     [-UAgi USER_AUTH_GUILD_INVITE]
                     [-UArr USER_AUTH_ROLE_REQUIRED]
-                    [-UAri USER_AUTH_ROLE_INVITE] [-UAbt USER_AUTH_BOT_TOKEN]
+                    [-UAri USER_AUTH_ROLE_INVITE]
 
 Args that start with '--' (eg. -a) can also be set in a config file
 (/config/config.ini or specified via -cf or -scf). The recognized syntax
@@ -153,9 +153,6 @@ variables which override config file values which override defaults.
       -cds CAPTCHA_DSK, --captcha-dsk CAPTCHA_DSK
                             Pokemon Go captcha data-sitekey. [env var:
                             POGOMAP_CAPTCHA_DSK]
-      -mcd MANUAL_CAPTCHA_DOMAIN, --manual-captcha-domain MANUAL_CAPTCHA_DOMAIN
-                            Domain to where captcha tokens will be sent. [env var:
-                            POGOMAP_MANUAL_CAPTCHA_DOMAIN]
       -mcr MANUAL_CAPTCHA_REFRESH, --manual-captcha-refresh MANUAL_CAPTCHA_REFRESH
                             Time available before captcha page refreshes. [env
                             var: POGOMAP_MANUAL_CAPTCHA_REFRESH]
@@ -228,6 +225,9 @@ variables which override config file values which override defaults.
       -L LOCALE, --locale LOCALE
                             Locale for Pokemon names (check static/dist/locales
                             for more). [env var: POGOMAP_LOCALE]
+      -eh EXTERNAL_HOSTNAME, --external-hostname EXTERNAL_HOSTNAME
+                            Hostname used for external requests. [env var:
+                            POGOMAP_EXTERNAL_HOSTNAME]
       -c, --china           Coordinates transformer for China. [env var:
                             POGOMAP_CHINA]
       -m MOCK, --mock MOCK  Mock mode - point to a fpgo endpoint instead of using
@@ -372,7 +372,13 @@ variables which override config file values which override defaults.
                             Enable status page database update using STATUS_NAME
                             as main worker name. [env var: POGOMAP_STATUS_NAME]
       -hk HASH_KEY, --hash-key HASH_KEY
-                            Key for hash server [env var: POGOMAP_HASH_KEY]
+                            Key for hash server. [env var: POGOMAP_HASH_KEY]
+      -hs {bossland,devkat}, --hash-service {bossland,devkat}
+                            Hash service name. Supports bossland and devkat
+                            hashing. [env var: POGOMAP_HASH_SERVICE]
+      --hash-header-sleep   Use the BossLand headers to determine how long a
+                            worker should sleep if it exceeds the hashing quota.
+                            Default: False. [env var: POGOMAP_HASH_HEADER_SLEEP]
       -novc, --no-version-check
                             Disable API version check. [env var:
                             POGOMAP_NO_VERSION_CHECK]
@@ -445,8 +451,8 @@ variables which override config file values which override defaults.
                             POGOMAP_DB_CLEANUP_SPAWNPOINT]
       -DCf DB_CLEANUP_FORTS, --db-cleanup-forts DB_CLEANUP_FORTS
                             Clear gyms and pokestops from database X hours after
-                            last valid scan. Default: 0, 0 to disable.
-                            [env var: POGOMAP_DB_CLEANUP_FORTS]
+                            last valid scan. Default: 0, 0 to disable. [env var:
+                            POGOMAP_DB_CLEANUP_FORTS]
 
     Dynamic Rarity:
       -Rh RARITY_HOURS, --rarity-hours RARITY_HOURS
@@ -468,8 +474,12 @@ variables which override config file values which override defaults.
                             POGOMAP_STATUS_PAGE_FILTER]
 
     Discord User Authentication:
-      -UA, --user-auth      Require end-users to authenticate using Discord.
-                            [env var: POGOMAP_USER_AUTH]
+      -UA, --user-auth      Require end-users to authenticate using Discord. [env
+                            var: POGOMAP_USER_AUTH]
+      -UAv USER_AUTH_VALIDITY, --user-auth-validity USER_AUTH_VALIDITY
+                            Check every X hours if user authentication is still
+                            valid and refresh access token. [env var:
+                            POGOMAP_USER_AUTH_VALIDITY]
       -UAsk USER_AUTH_SECRET_KEY, --user-auth-secret-key USER_AUTH_SECRET_KEY
                             Secret key to encrypt session cookies. Use a randomly
                             generated string. [env var:
@@ -480,9 +490,10 @@ variables which override config file values which override defaults.
       -UAcs USER_AUTH_CLIENT_SECRET, --user-auth-client-secret USER_AUTH_CLIENT_SECRET
                             Discord Client secret for user authentication. [env
                             var: POGOMAP_USER_AUTH_CLIENT_SECRET]
-      -UAh USER_AUTH_HOSTNAME, --user-auth-hostname USER_AUTH_HOSTNAME
-                            Hostname override for user authentication. [env var:
-                            POGOMAP_USER_AUTH_HOSTNAME]
+      -UAbt USER_AUTH_BOT_TOKEN, --user-auth-bot-token USER_AUTH_BOT_TOKEN
+                            Discord Bot Token required for fetching user roles
+                            within the required guild. [env var:
+                            POGOMAP_USER_AUTH_BOT_TOKEN]
       -UAgr USER_AUTH_GUILD_REQUIRED, --user-auth-guild-required USER_AUTH_GUILD_REQUIRED
                             Discord Guild the users must join to be able to access
                             the map. [env var: POGOMAP_USER_AUTH_GUILD_REQUIRED]
@@ -490,13 +501,9 @@ variables which override config file values which override defaults.
                             Invitation link for the required guild. [env var:
                             POGOMAP_USER_AUTH_GUILD_INVITE]
       -UArr USER_AUTH_ROLE_REQUIRED, --user-auth-role-required USER_AUTH_ROLE_REQUIRED
-                            Discord Guild Role IDs the users are required to have
-                            at least one in order to access the map. [env var:
+                            Discord Guild Role name(s) the users must have (at
+                            least one) in order to access the map. [env var:
                             POGOMAP_USER_AUTH_ROLE_REQUIRED]
       -UAri USER_AUTH_ROLE_INVITE, --user-auth-role-invite USER_AUTH_ROLE_INVITE
                             Invitation link for the required role. [env var:
                             POGOMAP_USER_AUTH_ROLE_INVITE]
-      -UAbt USER_AUTH_BOT_TOKEN, --user-auth-bot-token USER_AUTH_BOT_TOKEN
-                            Discord Bot Token required for fetching user roles
-                            within the required Guild. [env var:
-                            POGOMAP_USER_AUTH_BOT_TOKEN]
