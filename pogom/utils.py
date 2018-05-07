@@ -510,7 +510,7 @@ def get_args():
     parser.add_argument('--disable-blacklist',
                         help=('Disable the global anti-scraper IP blacklist.'),
                         action='store_true', default=False)
-    parser.add_argument('-tp', '--trusted-proxies', default=[],
+    parser.add_argument('-tp', '--trusted-proxies', default=['127.0.0.1'],
                         action='append',
                         help=('Enables the use of X-FORWARDED-FOR headers ' +
                               'to identify the IP of clients connecting ' +
@@ -576,6 +576,10 @@ def get_args():
                        help=('Check every X hours if user authentication ' +
                              'is still valid and refresh access token.'),
                        type=int, default=24)
+    group.add_argument('-UAbc', '--user-auth-block-concurrent',
+                       help=('Block user access for X hours if concurrent ' +
+                             'logins are detected. Default: 0 (disabled).'),
+                       type=int, default=0)
     group.add_argument('-UAsk', '--user-auth-secret-key', default=None,
                        help='Secret key to encrypt session cookies. '
                             'Use a randomly generated string.')

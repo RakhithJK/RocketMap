@@ -185,7 +185,8 @@ class Pogom(Flask):
         if request.endpoint == 'get_account_stats':
             return
 
-        return self.discord_api.check_auth(session)
+        return self.discord_api.check_auth(
+            session, request.headers.get('User-Agent'), ip_addr)
 
     def _ip_is_blacklisted(self, ip):
         if not self.blacklist:

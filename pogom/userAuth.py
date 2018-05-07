@@ -2,12 +2,17 @@
 # -*- coding: utf-8 -*-
 
 import logging
+import json
 import requests
 import urllib
+from cachetools import TTLCache
 from datetime import datetime, timedelta
+from timeit import default_timer
 
-from flask import redirect
+from flask import abort, redirect
 from requests.exceptions import HTTPError
+
+from security import AESCipher
 
 log = logging.getLogger(__name__)
 
@@ -18,6 +23,15 @@ class DiscordAPI():
     def __init__(self, args):
         self.client_id = args.user_auth_client_id
         self.client_secret = args.user_auth_client_secret
+        self.aes_cipher = AESCipher(args.user_auth_secret_key)
+        self.auth_cache = TTLCache(maxsize=10000, ttl=300)
+
+        self.block_concurrent = args.user_auth_block_concurrent
+        if args.user_auth_block_concurrent:
+            hold_time = args.user_auth_block_concurrent * 3600
+        else:
+            hold_time = 3600
+        self.blacklist = TTLCache(maxsize=10000, ttl=hold_time)
 
         self.hostname = args.host
         if args.external_hostname:
@@ -97,11 +111,6 @@ class DiscordAPI():
             log.error('Invalid OAuth response from Discord API.')
             return result
 
-        expires_in = response['expires_in']
-        refresh_time = min(self.validity, expires_in)
-        response['refresh_date'] = (datetime.utcnow() +
-                                    timedelta(seconds=refresh_time))
-
         user_guilds = self.get_user_guilds(access_token)
         if user_guilds is None:
             log.error('Unable to retrieve user guilds from Discord API.')
@@ -160,8 +169,15 @@ class DiscordAPI():
                 result['url'] = self.role_invite_link
                 return result
 
-        # Register user credentials in session.
-        session['user_auth'] = response
+        # Configure user credentials expiration date.
+        refresh_time = min(self.validity, response['expires_in'])
+        session['refresh_date'] = (datetime.utcnow() +
+                                   timedelta(seconds=refresh_time))
+
+        # Encrypt and store user credentials on session cookie.
+        response = json.dumps(response)
+        session['user_auth'] = self.aes_cipher.encrypt(response)
+        session['user_id'] = user_id
 
         result['auth'] = True
         return result
@@ -174,22 +190,75 @@ class DiscordAPI():
         return redirect(url)
 
     # https://discordapp.com/developers/docs/topics/oauth2#authorization-code-grant
-    def check_auth(self, session):
-        user_auth = session.get('user_auth')
-        if not user_auth:
+    def check_auth(self, session, user_agent, remote_addr):
+        user_id = session.get('user_id')
+        # Check if session is initialized.
+        if not user_id:
             return self.redirect_to_auth()
 
-        if user_auth['refresh_date'] < datetime.utcnow():
-            response = self.refresh_token(user_auth['refresh_token'])
-            session.clear()
-            if not response:
-                log.error('Failed to refresh OAuth user authentication.')
+        # Check if user ID is blacklisted.
+        if self.blacklist.get(user_id):
+            return abort(403)
+
+        # Check if user credentials are cached.
+        now = default_timer()
+        cached = self.auth_cache.get(user_id)
+        if cached:
+            if not self.block_concurrent:
+                return None
+
+            # Monitor for concurrent logins.
+            if (user_agent != cached['user_agent'] or
+                    remote_addr != cached['remote_addr']):
+                cached['changes'] += 1
+                elapsed = now - cached['time']
+                if elapsed > 60 and elapsed < 120 and cached['changes'] > 20:
+                    log.warning('Detected concurrent accesses from user: %s',
+                                user_id)
+                    self.blacklist[user_id] = True
+                    abort(403)
+
+                cached['user_agent'] = user_agent
+                cached['remote_addr'] = remote_addr
+
+            return None
+
+        try:
+            # Decrypt and validate user credentials from session.
+            decrypted = self.aes_cipher.decrypt(session['user_auth'])
+            user_auth = json.loads(decrypted)
+
+            if user_id == int(user_auth['user_id']):
+                log.warning('Detected secure cookie tampering from user: %s',
+                            user_id)
+                session.clear()
                 return self.redirect_to_auth()
-            valid = self.validate_auth(session, response)
-            if not valid['auth'] and not valid['url']:
-                return self.redirect_to_auth()
-            elif not valid['auth']:
-                return redirect(valid['url'])
+
+            # Update cache.
+            self.auth_cache[user_id] = {
+                'user_agent': user_agent,
+                'remote_addr': remote_addr,
+                'time': now,
+                'changes': 0
+            }
+
+            # Check if access token needs to be refreshed.
+            if session['refresh_date'] < datetime.utcnow():
+                response = self.refresh_token(user_auth['refresh_token'])
+                session.clear()
+                if not response:
+                    log.error('Failed to refresh OAuth user authentication.')
+                    return self.redirect_to_auth()
+
+                valid = self.discord_api.validate_auth(session, response)
+                if not valid['auth'] and not valid['url']:
+                    return self.redirect_to_auth()
+                elif not valid['auth']:
+                    return redirect(valid['url'])
+
+        except Exception as e:
+            log.exception('Unable to verify user credentials: %s', e)
+            return self.redirect_to_auth()
 
         return None
 
